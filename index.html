@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Battle Ground</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="menu" class="screen active">
+    <div class="menu-card">
+      <h1>Battle Ground</h1>
+
+      <label class="field">
+        <span>Player Name</span>
+        <input id="playerName" type="text" maxlength="20" placeholder="Enter your name" autocomplete="off" />
+      </label>
+
+      <button id="btnSolo" class="btn btn-secondary">Play Solo (Test)</button>
+
+      <div class="divider">Multiplayer</div>
+
+      <div class="join-row">
+        <label class="field grow">
+          <span>Join Code</span>
+          <input id="joinCode" type="text" maxlength="6" inputmode="numeric" placeholder="6-digit code" autocomplete="off" />
+        </label>
+        <button type="button" id="btnJoin" class="btn btn-primary">Join Game</button>
+      </div>
+
+      <button type="button" id="btnCreate" class="btn btn-accent">Create Room</button>
+
+      <div id="shareBox" class="share-box hidden">
+        <p class="share-title">Share with friends</p>
+        <div class="share-row">
+          <input id="shareUrl" class="share-input" type="text" readonly />
+          <button type="button" id="btnCopyUrl" class="btn btn-small">Copy link</button>
+        </div>
+        <p class="share-hint">They open this link and use the same room code, or click the link to auto-fill it.</p>
+      </div>
+
+      <p id="status" class="status" aria-live="polite"></p>
+      <p class="help-text">No install needed — open this page, create a room, share the link. Works on GitHub Pages.</p>
+    </div>
+  </div>
+
+  <div id="game" class="screen">
+    <div class="hud">
+      <span id="roomLabel"></span>
+      <span class="hint">WASD to move</span>
+      <button type="button" id="btnCopyCode" class="btn btn-small hidden">Copy code</button>
+      <button type="button" id="btnLeave" class="btn btn-small">Leave</button>
+    </div>
+    <p id="gameShareHint" class="game-share-hint hidden"></p>
+    <canvas id="canvas" width="800" height="500"></canvas>
+  </div>
+
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>

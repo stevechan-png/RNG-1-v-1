@@ -1,0 +1,254 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: "Segoe UI", system-ui, sans-serif;
+  background: linear-gradient(160deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  color: #eee;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.screen {
+  display: none;
+  width: 100%;
+  min-height: 100vh;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.screen.active {
+  display: flex;
+}
+
+.menu-card {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 2rem 2.5rem;
+  width: min(420px, 92vw);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+}
+
+.menu-card h1 {
+  text-align: center;
+  margin-bottom: 1.5rem;
+  font-size: 1.75rem;
+  letter-spacing: 0.05em;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 1rem;
+}
+
+.field span {
+  font-size: 0.8rem;
+  color: #aab;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.field input {
+  padding: 0.65rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 1rem;
+}
+
+.field input:focus {
+  outline: none;
+  border-color: #4a9eff;
+}
+
+.btn {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border: none;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.1s, opacity 0.15s;
+  margin-bottom: 0.65rem;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+  opacity: 0.92;
+}
+
+.btn:active {
+  transform: translateY(0);
+}
+
+.btn-primary {
+  background: #3498db;
+  color: #fff;
+  width: auto;
+  margin-bottom: 0;
+  white-space: nowrap;
+}
+
+.btn-secondary {
+  background: #555;
+  color: #fff;
+}
+
+.btn-accent {
+  background: linear-gradient(135deg, #e74c3c, #c0392b);
+  color: #fff;
+}
+
+.btn-small {
+  width: auto;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.85rem;
+  margin: 0;
+  background: #444;
+  color: #fff;
+}
+
+.divider {
+  text-align: center;
+  color: #778;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin: 0.5rem 0 1rem;
+}
+
+.join-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  margin-bottom: 0.65rem;
+}
+
+.grow {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.status {
+  min-height: 1.25rem;
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+  text-align: center;
+  color: #f39c12;
+}
+
+.status.error {
+  color: #e74c3c;
+}
+
+.status.success {
+  color: #2ecc71;
+}
+
+.help-text {
+  margin-top: 1rem;
+  font-size: 0.75rem;
+  color: #778;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: wait;
+  transform: none;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.share-box {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.share-title {
+  font-size: 0.75rem;
+  color: #9ab;
+  margin-bottom: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.share-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.share-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(0, 0, 0, 0.35);
+  color: #8cf;
+  font-size: 0.8rem;
+}
+
+.share-hint {
+  margin-top: 0.5rem;
+  font-size: 0.72rem;
+  color: #889;
+  line-height: 1.35;
+}
+
+.game-share-hint {
+  width: min(800px, 100%);
+  font-size: 0.8rem;
+  color: #9ab;
+  text-align: center;
+}
+
+#game {
+  padding: 1rem;
+  gap: 0.75rem;
+}
+
+.hud {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  width: min(800px, 100%);
+  flex-wrap: wrap;
+}
+
+.hud .hint {
+  color: #889;
+  font-size: 0.85rem;
+  flex: 1;
+}
+
+#roomLabel {
+  font-weight: 600;
+  color: #4a9eff;
+}
+
+#canvas {
+  border-radius: 8px;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  background: #2d5a27;
+  max-width: 100%;
+  height: auto;
+}

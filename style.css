@@ -267,6 +267,18 @@ body {
   text-align: right;
 }
 
+.weapons-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.weapons-actions .btn {
+  margin-bottom: 0;
+  flex: 1;
+}
+
 #roomLabel {
   font-weight: 600;
   color: #4a9eff;

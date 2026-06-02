@@ -27,18 +27,22 @@
   const btnJoin = document.getElementById("btnJoin");
   const btnCreate = document.getElementById("btnCreate");
   const btnLeave = document.getElementById("btnLeave");
-  const btnRoll = document.getElementById("btnRoll");
-  const btnBackpack = document.getElementById("btnBackpack");
+  const btnWeapons = document.getElementById("btnWeapons");
   const btnCopyUrl = document.getElementById("btnCopyUrl");
   const btnCopyCode = document.getElementById("btnCopyCode");
   const gameStatusEl = document.getElementById("gameStatus");
-  const backpackModalEl = document.getElementById("backpackModal");
+  const weaponsModalEl = document.getElementById("weaponsModal");
   const backpackListEl = document.getElementById("backpackList");
-  const btnCloseBackpack = document.getElementById("btnCloseBackpack");
+  const btnCloseWeapons = document.getElementById("btnCloseWeapons");
+  const btnRollWeapon = document.getElementById("btnRollWeapon");
+  const btnRollTrait = document.getElementById("btnRollTrait");
+  const killsLabelEl = document.getElementById("killsLabel");
+  const traitLabelEl = document.getElementById("traitLabel");
   const playerMenuEl = document.getElementById("playerMenu");
   const playerMenuTitleEl = document.getElementById("playerMenuTitle");
   const kickReasonInput = document.getElementById("kickReason");
   const btnKick = document.getElementById("btnKick");
+  const btnBan = document.getElementById("btnBan");
   const btnClosePlayerMenu = document.getElementById("btnClosePlayerMenu");
   const kickedOverlayEl = document.getElementById("kickedOverlay");
   const kickedMessageEl = document.getElementById("kickedMessage");
@@ -73,12 +77,16 @@
   let lastAim = { x: WORLD_W / 2, y: WORLD_H / 2 };
   let rollAnimTimer = null;
   let rollAnimUntil = 0;
+  let adminHoldTimer = null;
+  let suppressNextAttack = false;
+  let dashCooldownUntil = 0;
 
   // local account persistence (per device)
   const LS_ACCOUNTS = "bg_accounts_v1";
   const LS_CURRENT = "bg_current_user_v1";
+  const LS_ROOM_BANS = "bg_room_bans_v1";
   let currentUser = null;
-  let profile = null; // { inventory: string[], equipped: string|null }
+  let profile = null; // { inventory: string[], equipped: string|null, kills:number, trait:string|null }
 
   function getPlayerName() {
     return (playerNameInput.value || "Player").trim().slice(0, 20) || "Player";
@@ -100,8 +108,7 @@
     btnSolo.disabled = busy;
     btnJoin.disabled = busy;
     btnCreate.disabled = busy;
-    btnRoll.disabled = busy;
-    btnBackpack.disabled = busy;
+    btnWeapons.disabled = busy;
   }
 
   function generateCode() {
@@ -165,7 +172,7 @@
   }
 
   function getDefaultProfile() {
-    return { inventory: [], equipped: null };
+    return { inventory: [], equipped: null, kills: 0, trait: null };
   }
 
   function loadProfileFor(user) {
@@ -188,7 +195,7 @@
     else localStorage.removeItem(LS_CURRENT);
     profile = currentUser ? loadProfileFor(currentUser) : getDefaultProfile();
     renderAccountUI();
-    renderBackpack();
+    renderWeaponsModal();
   }
 
   function renderAccountUI() {
@@ -222,6 +229,59 @@
       }
     }
     renderBackpack();
+  }
+
+  function loadRoomBans() {
+    try {
+      return JSON.parse(localStorage.getItem(LS_ROOM_BANS) || "{}") || {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveRoomBans(obj) {
+    localStorage.setItem(LS_ROOM_BANS, JSON.stringify(obj));
+  }
+
+  function isAccountBanned(room, username) {
+    if (!room || !username) return false;
+    const bans = loadRoomBans();
+    const list = bans[room];
+    return Array.isArray(list) ? list.includes(username) : false;
+  }
+
+  function banAccount(room, username) {
+    if (!room || !username) return;
+    const bans = loadRoomBans();
+    const list = Array.isArray(bans[room]) ? bans[room] : [];
+    if (!list.includes(username)) list.push(username);
+    bans[room] = list;
+    saveRoomBans(bans);
+  }
+
+  function traitDefs() {
+    return {
+      dash: { id: "dash", name: "Dash" },
+      speedy: { id: "speedy", name: "Speedy" },
+      transparency: { id: "transparency", name: "Transparency" },
+    };
+  }
+
+  function rollTraitId() {
+    // Dash 1/2, Speedy 1/9, Transparency 1/35
+    // Normalized weights: 315 : 70 : 18
+    const r = Math.random() * (315 + 70 + 18);
+    if (r < 315) return "dash";
+    if (r < 315 + 70) return "speedy";
+    return "transparency";
+  }
+
+  function movementMultiplierForTrait(trait) {
+    return trait === "speedy" ? 1.2 : 1;
+  }
+
+  function alphaForTrait(trait) {
+    return trait === "transparency" ? 0.8 : 1;
   }
 
   function peerOptions(overrides) {
@@ -458,7 +518,7 @@
   function applyState(list, selfId) {
     players.clear();
     for (const p of list) {
-      players.set(p.id, { dirX: 1, dirY: 0, weapon: null, hp: MAX_HP, ...p });
+      players.set(p.id, { dirX: 1, dirY: 0, weapon: null, hp: MAX_HP, trait: null, kills: 0, user: null, ...p });
       if (p.id === selfId) localPlayer = players.get(p.id);
     }
     updateP1Cursor();
@@ -482,6 +542,12 @@
         break;
       case "equip":
         if (players.has(msg.id)) players.get(msg.id).weapon = msg.weapon;
+        break;
+      case "trait":
+        if (players.has(msg.id)) players.get(msg.id).trait = msg.trait;
+        break;
+      case "kills":
+        if (players.has(msg.id)) players.get(msg.id).kills = msg.kills;
         break;
       case "face":
         if (players.has(msg.id)) {
@@ -525,6 +591,12 @@
 
     conn.on("data", (data) => {
       if (data.type === "join") {
+        const guestUser = (data.user || "").trim();
+        if (guestUser && isAccountBanned(roomCode, guestUser)) {
+          conn.send({ type: "error", message: "You are banned from this room." });
+          conn.close();
+          return;
+        }
         const slot = nextSlot();
         if (slot < 0) {
           conn.send({ type: "error", message: "Room is full." });
@@ -540,6 +612,9 @@
           color: PLAYER_COLORS[slot],
           hp: MAX_HP,
           weapon: null,
+          user: guestUser || null,
+          trait: data.trait || null,
+          kills: typeof data.kills === "number" ? data.kills : 0,
         };
         players.set(player.id, player);
         conn.send({
@@ -562,6 +637,18 @@
           p.dirX = data.dirX;
           p.dirY = data.dirY;
           broadcast({ type: "face", id: p.id, dirX: p.dirX, dirY: p.dirY }, conn);
+        }
+      } else if (data.type === "trait") {
+        const p = players.get(conn.peer);
+        if (p) {
+          p.trait = data.trait || null;
+          broadcast({ type: "trait", id: p.id, trait: p.trait }, conn);
+        }
+      } else if (data.type === "kills") {
+        const p = players.get(conn.peer);
+        if (p) {
+          p.kills = typeof data.kills === "number" ? data.kills : p.kills;
+          broadcast({ type: "kills", id: p.id, kills: p.kills }, conn);
         }
       } else {
         handleMessage(data, conn);
@@ -635,6 +722,8 @@
   }
 
   function drawPlayer(p, isLocal) {
+    ctx.save();
+    ctx.globalAlpha = alphaForTrait(p.trait);
     const half = PLAYER_SIZE / 2;
     ctx.fillStyle = p.color;
     ctx.fillRect(p.x - half, p.y - half, PLAYER_SIZE, PLAYER_SIZE);
@@ -714,6 +803,7 @@
       }
       ctx.restore();
     }
+    ctx.restore();
   }
 
   function sendMove(x, y) {
@@ -728,10 +818,11 @@
     if (!localPlayer) return;
     let dx = 0;
     let dy = 0;
-    if (keys["w"] || keys["arrowup"]) dy -= SPEED;
-    if (keys["s"] || keys["arrowdown"]) dy += SPEED;
-    if (keys["a"] || keys["arrowleft"]) dx -= SPEED;
-    if (keys["d"] || keys["arrowright"]) dx += SPEED;
+    const mult = movementMultiplierForTrait(localPlayer.trait || profile?.trait);
+    if (keys["w"] || keys["arrowup"]) dy -= SPEED * mult;
+    if (keys["s"] || keys["arrowdown"]) dy += SPEED * mult;
+    if (keys["a"] || keys["arrowleft"]) dx -= SPEED * mult;
+    if (keys["d"] || keys["arrowright"]) dx += SPEED * mult;
     if (!dx && !dy) return;
     const half = PLAYER_SIZE / 2;
     const nx = clamp(localPlayer.x + dx, half, WORLD_W - half);
@@ -982,7 +1073,13 @@
     });
 
     await waitForConnOpen(conn, 15000);
-    conn.send({ type: "join", name: getPlayerName() });
+    conn.send({
+      type: "join",
+      name: getPlayerName(),
+      user: currentUser || null,
+      trait: profile?.trait || null,
+      kills: typeof profile?.kills === "number" ? profile.kills : 0,
+    });
 
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("No response from host.")), 10000);
@@ -999,17 +1096,31 @@
     setStatus("Joined!", "success");
     // send equipped to host
     if (profile?.equipped) sendToHost({ type: "equip", weapon: profile.equipped });
+    if (profile?.trait) sendToHost({ type: "trait", trait: profile.trait });
+    if (typeof profile?.kills === "number") sendToHost({ type: "kills", kills: profile.kills });
   }
 
-  function openBackpack() {
+  function renderWeaponsModal() {
+    if (killsLabelEl && traitLabelEl) {
+      const kills = typeof profile?.kills === "number" ? profile.kills : 0;
+      killsLabelEl.textContent = String(kills);
+      const t = profile?.trait || null;
+      const td = traitDefs();
+      traitLabelEl.textContent = t ? (td[t]?.name || t) : "None";
+      if (btnRollTrait) btnRollTrait.disabled = kills < 5;
+    }
     renderBackpack();
-    backpackModalEl.classList.remove("hidden");
-    backpackModalEl.setAttribute("aria-hidden", "false");
   }
 
-  function closeBackpack() {
-    backpackModalEl.classList.add("hidden");
-    backpackModalEl.setAttribute("aria-hidden", "true");
+  function openWeaponsModal() {
+    renderWeaponsModal();
+    weaponsModalEl.classList.remove("hidden");
+    weaponsModalEl.setAttribute("aria-hidden", "false");
+  }
+
+  function closeWeaponsModal() {
+    weaponsModalEl.classList.add("hidden");
+    weaponsModalEl.setAttribute("aria-hidden", "true");
   }
 
   function renderBackpack() {
@@ -1067,6 +1178,25 @@
         showShareBox(roomCode || "");
       }
     }, 90);
+  }
+
+  function rollTrait() {
+    const kills = typeof profile?.kills === "number" ? profile.kills : 0;
+    if (kills < 5) {
+      setGameStatus("Need 5 kills to roll a trait.", "error");
+      return;
+    }
+    const id = rollTraitId();
+    profile.trait = id;
+    if (currentUser) saveProfileFor(currentUser, profile);
+    if (localPlayer) {
+      localPlayer.trait = id;
+      if (mode === "host") broadcast({ type: "trait", id: localPlayer.id, trait: id });
+      else if (mode === "guest") sendToHost({ type: "trait", trait: id });
+    }
+    const td = traitDefs();
+    setGameStatus(`Trait: ${td[id].name}`, "success");
+    renderWeaponsModal();
   }
 
   function canAttack() {
@@ -1180,6 +1310,23 @@
     const msg = { type: "hp", id: targetId, hp: t.hp, attackerId };
     if (mode === "host") broadcast(msg);
     handleMessage(msg);
+
+    // kill tracking (host/solo authoritative)
+    if (t.hp === 0 && attackerId) {
+      const a = players.get(attackerId);
+      if (a) {
+        a.kills = (typeof a.kills === "number" ? a.kills : 0) + 1;
+        const km = { type: "kills", id: attackerId, kills: a.kills };
+        if (mode === "host") broadcast(km);
+        handleMessage(km);
+        if (localPlayer && attackerId === localPlayer.id) {
+          if (!profile) profile = getDefaultProfile();
+          profile.kills = a.kills;
+          if (currentUser) saveProfileFor(currentUser, profile);
+          renderWeaponsModal();
+        }
+      }
+    }
   }
 
   function handleAttack(attackerId, data) {
@@ -1281,14 +1428,19 @@
 
   btnLeave.addEventListener("click", showMenu);
   btnCopyUrl.addEventListener("click", () => copyText(shareUrlInput.value));
-  btnRoll.addEventListener("click", () => {
+  btnWeapons.addEventListener("click", openWeaponsModal);
+  btnCloseWeapons.addEventListener("click", closeWeaponsModal);
+  weaponsModalEl.addEventListener("click", (e) => {
+    if (e.target === weaponsModalEl) closeWeaponsModal();
+  });
+  btnRollWeapon.addEventListener("click", () => {
     if (!profile) profile = getDefaultProfile();
     rollWeapon();
+    renderWeaponsModal();
   });
-  btnBackpack.addEventListener("click", openBackpack);
-  btnCloseBackpack.addEventListener("click", closeBackpack);
-  backpackModalEl.addEventListener("click", (e) => {
-    if (e.target === backpackModalEl) closeBackpack();
+  btnRollTrait.addEventListener("click", () => {
+    if (!profile) profile = getDefaultProfile();
+    rollTrait();
   });
   backpackListEl.addEventListener("click", (e) => {
     const t = e.target;
@@ -1302,6 +1454,18 @@
     kickPlayer(menuTargetPlayer.id, kickReasonInput.value);
   });
 
+  btnBan.addEventListener("click", () => {
+    if (!menuTargetPlayer) return;
+    const user = menuTargetPlayer.user;
+    if (!user) {
+      setGameStatus("That player has no account username to ban.", "error");
+      return;
+    }
+    banAccount(roomCode, user);
+    kickPlayer(menuTargetPlayer.id, "Banned");
+    setGameStatus(`Banned ${user} from this room`, "success");
+  });
+
   btnClosePlayerMenu.addEventListener("click", closePlayerMenu);
 
   playerMenuEl.addEventListener("click", (e) => {
@@ -1313,15 +1477,17 @@
     showMenu();
   });
 
-  canvas.addEventListener("click", (e) => {
+  // Admin menu: right click
+  canvas.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
     if (!isP1()) return;
-    if (!playerMenuEl.classList.contains("hidden")) {
-      closePlayerMenu();
-      return;
-    }
+    if (!playerMenuEl.classList.contains("hidden")) return;
     const { x, y } = getCanvasCoords(e.clientX, e.clientY);
     const target = findClickedPlayer(x, y);
-    if (target) openPlayerMenu(target);
+    if (target) {
+      suppressNextAttack = true;
+      openPlayerMenu(target);
+    }
   });
 
   // Combat: aim at click (mousedown/up for dagger long-throw)
@@ -1329,14 +1495,38 @@
     if (!canAttack()) return;
     if (kickedOverlayEl && !kickedOverlayEl.classList.contains("hidden")) return;
     if (!playerMenuEl.classList.contains("hidden")) return;
-    if (!backpackModalEl.classList.contains("hidden")) return;
+    if (!weaponsModalEl.classList.contains("hidden")) return;
     const { x, y } = getCanvasCoords(e.clientX, e.clientY);
     lastAim = { x, y };
     clickDownAt = now();
+
+    // P1 long-press (left button) to open admin menu
+    suppressNextAttack = false;
+    if (isP1() && e.button === 0) {
+      if (adminHoldTimer) clearTimeout(adminHoldTimer);
+      const cx = e.clientX;
+      const cy = e.clientY;
+      adminHoldTimer = setTimeout(() => {
+        const c = getCanvasCoords(cx, cy);
+        const target = findClickedPlayer(c.x, c.y);
+        if (target) {
+          suppressNextAttack = true;
+          openPlayerMenu(target);
+        }
+      }, 450);
+    }
   });
 
   canvas.addEventListener("mouseup", (e) => {
     if (!canAttack()) return;
+    if (adminHoldTimer) {
+      clearTimeout(adminHoldTimer);
+      adminHoldTimer = null;
+    }
+    if (suppressNextAttack) {
+      suppressNextAttack = false;
+      return;
+    }
     const weapon = getEquippedWeapon();
     if (!weapon) {
       setGameStatus("No weapon equipped. Roll one first.", "error");
@@ -1364,6 +1554,24 @@
 
   window.addEventListener("keydown", (e) => {
     keys[e.key.toLowerCase()] = true;
+    if (e.key.toLowerCase() === "q") {
+      const trait = localPlayer?.trait || profile?.trait;
+      if (trait === "dash" && localPlayer) {
+        const t = now();
+        if (t >= dashCooldownUntil) {
+          dashCooldownUntil = t + 1400;
+          const dx = typeof localPlayer.dirX === "number" ? localPlayer.dirX : 1;
+          const dy = typeof localPlayer.dirY === "number" ? localPlayer.dirY : 0;
+          const dist = 85;
+          const half = PLAYER_SIZE / 2;
+          const nx = clamp(localPlayer.x + dx * dist, half, WORLD_W - half);
+          const ny = clamp(localPlayer.y + dy * dist, half, WORLD_H - half);
+          localPlayer.x = nx;
+          localPlayer.y = ny;
+          sendMove(nx, ny);
+        }
+      }
+    }
     if (
       ["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(
         e.key.toLowerCase()

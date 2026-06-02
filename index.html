@@ -73,8 +73,7 @@
       <span id="roomLabel"></span>
       <span class="hint">WASD to move</span>
       <span id="gameStatus" class="game-status"></span>
-      <button type="button" id="btnRoll" class="btn btn-small">Roll Weapon</button>
-      <button type="button" id="btnBackpack" class="btn btn-small">Backpack</button>
+      <button type="button" id="btnWeapons" class="btn btn-small">Weapons</button>
       <button type="button" id="btnCopyCode" class="btn btn-small hidden">Copy code</button>
       <button type="button" id="btnLeave" class="btn btn-small">Leave</button>
     </div>
@@ -84,11 +83,19 @@
     </div>
   </div>
 
-  <div id="backpackModal" class="modal hidden" aria-hidden="true">
+  <div id="weaponsModal" class="modal hidden" aria-hidden="true">
     <div class="modal-card">
-      <h2>Backpack</h2>
+      <h2>Weapons</h2>
+      <p class="help-text"><strong>Kills:</strong> <span id="killsLabel">0</span> · <strong>Trait:</strong> <span id="traitLabel">None</span></p>
+
+      <div class="weapons-actions">
+        <button type="button" id="btnRollWeapon" class="btn btn-accent">Roll Weapon</button>
+        <button type="button" id="btnRollTrait" class="btn btn-primary" disabled>Roll Trait (5 kills)</button>
+      </div>
+
+      <div class="divider">Backpack</div>
       <div id="backpackList" class="backpack-list"></div>
-      <button type="button" id="btnCloseBackpack" class="btn btn-secondary">Close</button>
+      <button type="button" id="btnCloseWeapons" class="btn btn-secondary">Close</button>
     </div>
   </div>
 
@@ -100,6 +107,7 @@
         <input id="kickReason" type="text" maxlength="80" placeholder="Why are they being kicked?" autocomplete="off" />
       </label>
       <button type="button" id="btnKick" class="btn btn-kick">Kick player</button>
+      <button type="button" id="btnBan" class="btn btn-kick">Ban account (perma)</button>
       <button type="button" id="btnClosePlayerMenu" class="btn btn-secondary">Cancel</button>
     </div>
   </div>

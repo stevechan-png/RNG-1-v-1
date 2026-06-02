@@ -52,7 +52,28 @@
       <button type="button" id="btnLeave" class="btn btn-small">Leave</button>
     </div>
     <p id="gameShareHint" class="game-share-hint hidden"></p>
-    <canvas id="canvas" width="800" height="500"></canvas>
+    <div class="canvas-wrap">
+      <canvas id="canvas" width="800" height="500"></canvas>
+    </div>
+  </div>
+
+  <div id="playerMenu" class="modal hidden" aria-hidden="true">
+    <div class="modal-card">
+      <h2 id="playerMenuTitle">Player</h2>
+      <label class="field">
+        <span>Reason (optional)</span>
+        <input id="kickReason" type="text" maxlength="80" placeholder="Why are they being kicked?" autocomplete="off" />
+      </label>
+      <button type="button" id="btnKick" class="btn btn-kick">Kick player</button>
+      <button type="button" id="btnClosePlayerMenu" class="btn btn-secondary">Cancel</button>
+    </div>
+  </div>
+
+  <div id="kickedOverlay" class="kicked-overlay hidden" aria-hidden="true">
+    <div class="kicked-card">
+      <p id="kickedMessage"></p>
+      <button type="button" id="btnKickedOk" class="btn btn-accent">OK</button>
+    </div>
   </div>
 
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>

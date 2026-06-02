@@ -245,10 +245,84 @@ body {
   color: #4a9eff;
 }
 
+.canvas-wrap {
+  width: min(800px, 100%);
+  line-height: 0;
+}
+
 #canvas {
   border-radius: 8px;
   border: 2px solid rgba(255, 255, 255, 0.15);
   background: #2d5a27;
   max-width: 100%;
   height: auto;
+  cursor: default;
+}
+
+#canvas.p1-cursor {
+  cursor: pointer;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.65);
+  padding: 1rem;
+}
+
+.modal-card {
+  background: #1e2a3a;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  width: min(340px, 92vw);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+
+.modal-card h2 {
+  font-size: 1.1rem;
+  margin-bottom: 1rem;
+  color: #fff;
+}
+
+.btn-kick {
+  background: linear-gradient(135deg, #c0392b, #922b21);
+  color: #fff;
+  margin-bottom: 0.5rem;
+}
+
+.kicked-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.85);
+  padding: 1.5rem;
+}
+
+.kicked-card {
+  background: #1a1a2e;
+  border: 2px solid #e74c3c;
+  border-radius: 12px;
+  padding: 2rem 1.75rem;
+  max-width: 420px;
+  text-align: center;
+}
+
+#kickedMessage {
+  font-size: 1.05rem;
+  line-height: 1.5;
+  margin-bottom: 1.5rem;
+  color: #eee;
+}
+
+#kickedMessage .host-name {
+  color: #e74c3c;
+  font-weight: 700;
 }

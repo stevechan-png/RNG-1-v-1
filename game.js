@@ -5,6 +5,7 @@
   const PLAYER_SIZE = 28;
   const MAX_PLAYERS = 5;
   const PLAYER_COLORS = ["#e74c3c", "#3498db", "#2ecc71", "#f1c40f", "#9b59b6"];
+  const IS_HTTPS = window.location.protocol === "https:";
 
   const menuEl = document.getElementById("menu");
   const gameEl = document.getElementById("game");
@@ -23,6 +24,14 @@
   const btnLeave = document.getElementById("btnLeave");
   const btnCopyUrl = document.getElementById("btnCopyUrl");
   const btnCopyCode = document.getElementById("btnCopyCode");
+  const playerMenuEl = document.getElementById("playerMenu");
+  const playerMenuTitleEl = document.getElementById("playerMenuTitle");
+  const kickReasonInput = document.getElementById("kickReason");
+  const btnKick = document.getElementById("btnKick");
+  const btnClosePlayerMenu = document.getElementById("btnClosePlayerMenu");
+  const kickedOverlayEl = document.getElementById("kickedOverlay");
+  const kickedMessageEl = document.getElementById("kickedMessage");
+  const btnKickedOk = document.getElementById("btnKickedOk");
 
   let keys = {};
   let animId = null;
@@ -31,9 +40,12 @@
   let peer = null;
   let hostConn = null;
   let guestConns = [];
+  let peerToConn = new Map();
   let localPlayer = null;
   let players = new Map();
   let myPeerId = null;
+  let menuTargetPlayer = null;
+  let wasKicked = false;
 
   function getPlayerName() {
     return (playerNameInput.value || "Player").trim().slice(0, 20) || "Player";
@@ -52,6 +64,22 @@
 
   function generateCode() {
     return String(Math.floor(100000 + Math.random() * 900000));
+  }
+
+  function peerOptions(overrides) {
+    const base = {
+      // Make PeerJS explicit for GitHub Pages / HTTPS
+      host: "0.peerjs.com",
+      port: IS_HTTPS ? 443 : 80,
+      path: "/",
+      secure: IS_HTTPS,
+      // Improve NAT traversal odds
+      config: {
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      },
+      debug: 0,
+    };
+    return { ...base, ...(overrides || {}) };
   }
 
   function roomPeerId(code) {
@@ -83,7 +111,144 @@
     return Math.max(min, Math.min(max, v));
   }
 
+  function isP1() {
+    return localPlayer && localPlayer.slot === 0 && mode === "host";
+  }
+
+  function buildKickMessage(hostName, reason) {
+    const r = (reason || "").trim();
+    if (r) {
+      return `You have been kicked from the game by ${hostName} Due to ${r}`;
+    }
+    return `You have been kicked from the game by ${hostName}`;
+  }
+
+  function showKickedOverlay(hostName, reason) {
+    const safeName = escapeHtml(hostName || "P1");
+    const r = (reason || "").trim();
+    if (r) {
+      kickedMessageEl.innerHTML =
+        `You have been kicked from the game by <span class="host-name">${safeName}</span> Due to ${escapeHtml(r)}`;
+    } else {
+      kickedMessageEl.innerHTML =
+        `You have been kicked from the game by <span class="host-name">${safeName}</span>`;
+    }
+    kickedOverlayEl.classList.remove("hidden");
+    kickedOverlayEl.setAttribute("aria-hidden", "false");
+  }
+
+  function hideKickedOverlay() {
+    kickedOverlayEl.classList.add("hidden");
+    kickedOverlayEl.setAttribute("aria-hidden", "true");
+    kickedMessageEl.textContent = "";
+  }
+
+  function escapeHtml(str) {
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function openPlayerMenu(player) {
+    if (!isP1() || player.slot === 0) return;
+    menuTargetPlayer = player;
+    playerMenuTitleEl.textContent = `P${player.slot + 1}: ${player.name}`;
+    kickReasonInput.value = "";
+    playerMenuEl.classList.remove("hidden");
+    playerMenuEl.setAttribute("aria-hidden", "false");
+    kickReasonInput.focus();
+  }
+
+  function closePlayerMenu() {
+    menuTargetPlayer = null;
+    playerMenuEl.classList.add("hidden");
+    playerMenuEl.setAttribute("aria-hidden", "true");
+    kickReasonInput.value = "";
+  }
+
+  function kickPlayer(playerId, reason) {
+    const conn = peerToConn.get(playerId);
+    if (!conn || !localPlayer) return;
+
+    const hostName = localPlayer.name;
+    const kickReason = (reason || "").trim().slice(0, 80);
+
+    try {
+      conn.send({
+        type: "kicked",
+        hostName,
+        reason: kickReason,
+      });
+    } catch (_) {}
+
+    players.delete(playerId);
+    broadcast({ type: "playerLeft", id: playerId });
+    guestConns = guestConns.filter((c) => c !== conn);
+    peerToConn.delete(playerId);
+
+    try {
+      conn.close();
+    } catch (_) {}
+
+    closePlayerMenu();
+  }
+
+  function getCanvasCoords(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return {
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY,
+    };
+  }
+
+  function hitTestPlayer(px, py, p) {
+    const half = PLAYER_SIZE / 2;
+    if (
+      px >= p.x - half &&
+      px <= p.x + half &&
+      py >= p.y - half &&
+      py <= p.y + half
+    ) {
+      return true;
+    }
+    const labelY = p.y - half - 10;
+    if (
+      px >= p.x - 55 &&
+      px <= p.x + 55 &&
+      py >= labelY - 18 &&
+      py <= labelY + 6
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  function findClickedPlayer(px, py) {
+    const sorted = allPlayers().sort((a, b) => b.slot - a.slot);
+    for (const p of sorted) {
+      if (p.id === localPlayer?.id) continue;
+      if (hitTestPlayer(px, py, p)) return p;
+    }
+    return null;
+  }
+
+  function updateP1Cursor() {
+    if (isP1() && mode !== "solo") {
+      canvas.classList.add("p1-cursor");
+    } else {
+      canvas.classList.remove("p1-cursor");
+    }
+  }
+
   function destroyPeer() {
+    closePlayerMenu();
+    hideKickedOverlay();
+    wasKicked = false;
+    peerToConn.clear();
     for (const c of guestConns) {
       try {
         c.close();
@@ -161,11 +326,14 @@
         }
         break;
       }
+      case "kicked":
+        break;
     }
   }
 
   function onHostConnection(conn) {
     guestConns.push(conn);
+    peerToConn.set(conn.peer, conn);
 
     conn.on("data", (data) => {
       if (data.type === "join") {
@@ -197,15 +365,20 @@
 
     conn.on("close", () => {
       guestConns = guestConns.filter((c) => c !== conn);
+      peerToConn.delete(conn.peer);
       if (players.has(conn.peer)) {
         players.delete(conn.peer);
         broadcast({ type: "playerLeft", id: conn.peer });
+      }
+      if (menuTargetPlayer && menuTargetPlayer.id === conn.peer) {
+        closePlayerMenu();
       }
     });
   }
 
   function showMenu() {
     destroyPeer();
+    canvas.classList.remove("p1-cursor");
     gameEl.classList.remove("active");
     menuEl.classList.add("active");
     gameShareHintEl.classList.add("hidden");
@@ -227,6 +400,7 @@
     canvas.height = WORLD_H;
     if (animId) cancelAnimationFrame(animId);
     animId = requestAnimationFrame(loop);
+    updateP1Cursor();
   }
 
   function drawLandscape() {
@@ -262,7 +436,8 @@
       ctx.lineWidth = 2;
       ctx.strokeRect(p.x - half, p.y - half, PLAYER_SIZE, PLAYER_SIZE);
     }
-    const label = `P${p.slot + 1}: ${p.name}`;
+    const prefix = `P${p.slot + 1}: `;
+    const label = prefix + p.name;
     ctx.font = "bold 12px Segoe UI, sans-serif";
     ctx.textAlign = "center";
     const tw = ctx.measureText(label).width;
@@ -270,8 +445,20 @@
     const labelY = p.y - half - 10;
     ctx.fillStyle = "rgba(0,0,0,0.55)";
     ctx.fillRect(p.x - tw / 2 - pad, labelY - 14, tw + pad * 2, 18);
-    ctx.fillStyle = "#fff";
-    ctx.fillText(label, p.x, labelY);
+    if (p.slot === 0) {
+      const prefixW = ctx.measureText(prefix).width;
+      const nameW = ctx.measureText(p.name).width;
+      const startX = p.x - tw / 2;
+      ctx.textAlign = "left";
+      ctx.fillStyle = "#fff";
+      ctx.fillText(prefix, startX, labelY);
+      ctx.fillStyle = "#e74c3c";
+      ctx.fillText(p.name, startX + prefixW, labelY);
+      ctx.textAlign = "center";
+    } else {
+      ctx.fillStyle = "#fff";
+      ctx.fillText(label, p.x, labelY);
+    }
   }
 
   function sendMove(x, y) {
@@ -352,7 +539,13 @@
       };
       const onError = (err) => {
         cleanup();
-        reject(new Error(err.type === "unavailable-id" ? "Code in use — try Create again." : "Could not connect."));
+        if (err && err.type === "unavailable-id") {
+          reject(new Error("Code in use — try Create again."));
+        } else if (err && err.type === "network") {
+          reject(new Error("Network blocked. If you're on GitHub Pages, ensure you use HTTPS and try again."));
+        } else {
+          reject(new Error("Could not connect."));
+        }
       };
       function cleanup() {
         clearTimeout(timer);
@@ -393,9 +586,7 @@
       throw new Error("Could not create a room. Try again.");
     }
     const code = generateCode();
-    const p = new Peer(roomPeerId(code), {
-      debug: 0,
-    });
+    const p = new Peer(roomPeerId(code), peerOptions());
 
     try {
       await waitForPeerOpen(p, 15000);
@@ -417,7 +608,14 @@
 
       p.on("connection", onHostConnection);
       p.on("error", (err) => {
-        if (err.type === "network") setStatus("Network error — check your connection.", "error");
+        if (err && err.type === "network") {
+          setStatus(
+            IS_HTTPS
+              ? "Network error — WebRTC/PeerJS might be blocked on this network."
+              : "Network error — try using the GitHub Pages HTTPS link.",
+            "error"
+          );
+        }
       });
 
       joinCodeInput.value = code;
@@ -442,7 +640,7 @@
     mode = "guest";
     roomCode = code;
 
-    const p = new Peer({ debug: 0 });
+    const p = new Peer(peerOptions());
     peer = p;
     await waitForPeerOpen(p, 15000);
     myPeerId = p.id;
@@ -451,6 +649,11 @@
     hostConn = conn;
 
     conn.on("data", (data) => {
+      if (data.type === "kicked") {
+        wasKicked = true;
+        showKickedOverlay(data.hostName || "P1", data.reason);
+        return;
+      }
       if (data.type === "error") {
         setStatus(data.message, "error");
         return;
@@ -459,6 +662,7 @@
     });
 
     conn.on("close", () => {
+      if (wasKicked) return;
       setStatus("Host left the room.", "error");
       setTimeout(showMenu, 1500);
     });
@@ -519,6 +723,33 @@
 
   btnLeave.addEventListener("click", showMenu);
   btnCopyUrl.addEventListener("click", () => copyText(shareUrlInput.value));
+
+  btnKick.addEventListener("click", () => {
+    if (!menuTargetPlayer) return;
+    kickPlayer(menuTargetPlayer.id, kickReasonInput.value);
+  });
+
+  btnClosePlayerMenu.addEventListener("click", closePlayerMenu);
+
+  playerMenuEl.addEventListener("click", (e) => {
+    if (e.target === playerMenuEl) closePlayerMenu();
+  });
+
+  btnKickedOk.addEventListener("click", () => {
+    hideKickedOverlay();
+    showMenu();
+  });
+
+  canvas.addEventListener("click", (e) => {
+    if (!isP1()) return;
+    if (!playerMenuEl.classList.contains("hidden")) {
+      closePlayerMenu();
+      return;
+    }
+    const { x, y } = getCanvasCoords(e.clientX, e.clientY);
+    const target = findClickedPlayer(x, y);
+    if (target) openPlayerMenu(target);
+  });
 
   window.addEventListener("keydown", (e) => {
     keys[e.key.toLowerCase()] = true;

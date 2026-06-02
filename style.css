@@ -279,6 +279,10 @@ body {
   flex: 1;
 }
 
+.hud .btn-small {
+  margin-bottom: 0;
+}
+
 #roomLabel {
   font-weight: 600;
   color: #4a9eff;

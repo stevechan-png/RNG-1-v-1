@@ -74,6 +74,7 @@
       <span class="hint">WASD to move</span>
       <span id="gameStatus" class="game-status"></span>
       <button type="button" id="btnWeapons" class="btn btn-small">Weapons</button>
+      <button type="button" id="btnSettings" class="btn btn-small">Settings</button>
       <button type="button" id="btnCopyCode" class="btn btn-small hidden">Copy code</button>
       <button type="button" id="btnLeave" class="btn btn-small">Leave</button>
     </div>
@@ -93,9 +94,26 @@
         <button type="button" id="btnRollTrait" class="btn btn-primary" disabled>Roll Trait (5 kills)</button>
       </div>
 
-      <div class="divider">Backpack</div>
+      <div class="divider">Weapons (Backpack)</div>
       <div id="backpackList" class="backpack-list"></div>
+
+      <div class="divider">Traits</div>
+      <div id="traitList" class="backpack-list"></div>
       <button type="button" id="btnCloseWeapons" class="btn btn-secondary">Close</button>
+    </div>
+  </div>
+
+  <div id="settingsModal" class="modal hidden" aria-hidden="true">
+    <div class="modal-card">
+      <h2>Settings</h2>
+      <div class="divider">Redeem Codes</div>
+      <label class="field">
+        <span>Code</span>
+        <input id="redeemCode" type="text" maxlength="64" placeholder="Paste code here" autocomplete="off" />
+      </label>
+      <button type="button" id="btnRedeem" class="btn btn-primary">Redeem</button>
+      <p id="redeemStatus" class="status" aria-live="polite"></p>
+      <button type="button" id="btnCloseSettings" class="btn btn-secondary">Close</button>
     </div>
   </div>
 

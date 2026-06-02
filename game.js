@@ -11,6 +11,9 @@
   const DAGGER_THROW_SPEED = 260;
   const BOW_LIFE_SEC = 3.5;
   const DAGGER_THROW_LIFE_SEC = 2;
+  const TOS_SPEED = Math.round(BOW_SPEED * 1.3);
+  const TOS_LIFE_SEC = 4;
+  const REDEEM_TOS_CODE = "ur3adthet3rm50fs3r1ve";
 
   const menuEl = document.getElementById("menu");
   const gameEl = document.getElementById("game");
@@ -28,16 +31,23 @@
   const btnCreate = document.getElementById("btnCreate");
   const btnLeave = document.getElementById("btnLeave");
   const btnWeapons = document.getElementById("btnWeapons");
+  const btnSettings = document.getElementById("btnSettings");
   const btnCopyUrl = document.getElementById("btnCopyUrl");
   const btnCopyCode = document.getElementById("btnCopyCode");
   const gameStatusEl = document.getElementById("gameStatus");
   const weaponsModalEl = document.getElementById("weaponsModal");
   const backpackListEl = document.getElementById("backpackList");
+  const traitListEl = document.getElementById("traitList");
   const btnCloseWeapons = document.getElementById("btnCloseWeapons");
   const btnRollWeapon = document.getElementById("btnRollWeapon");
   const btnRollTrait = document.getElementById("btnRollTrait");
   const killsLabelEl = document.getElementById("killsLabel");
   const traitLabelEl = document.getElementById("traitLabel");
+  const settingsModalEl = document.getElementById("settingsModal");
+  const redeemCodeEl = document.getElementById("redeemCode");
+  const btnRedeem = document.getElementById("btnRedeem");
+  const redeemStatusEl = document.getElementById("redeemStatus");
+  const btnCloseSettings = document.getElementById("btnCloseSettings");
   const playerMenuEl = document.getElementById("playerMenu");
   const playerMenuTitleEl = document.getElementById("playerMenuTitle");
   const kickReasonInput = document.getElementById("kickReason");
@@ -136,6 +146,11 @@
         name: "Dagger",
         meta: "Short: melee • Long: throw • 7 dmg",
       },
+      tos_rpg: {
+        id: "tos_rpg",
+        name: "Terms of Service Launcher",
+        meta: "Circle projectile • 35 dmg • 2.0s cd (redeem only)",
+      },
     };
   }
 
@@ -171,14 +186,41 @@
     return (u || "").trim().slice(0, 20);
   }
 
+  function hasInstantTraitUnlock() {
+    return normalizeUser(currentUser).toLowerCase() === "v4v5v6";
+  }
+
+  function canRollTrait() {
+    if (hasInstantTraitUnlock()) return true;
+    const kills = typeof profile?.kills === "number" ? profile.kills : 0;
+    return kills >= 5;
+  }
+
   function getDefaultProfile() {
-    return { inventory: [], equipped: null, kills: 0, trait: null };
+    return {
+      inventory: [],
+      equipped: null,
+      kills: 0,
+      trait: null,
+      traitInventory: [],
+      equippedTrait: null,
+    };
+  }
+
+  function migrateProfile(prof) {
+    if (!prof) return getDefaultProfile();
+    if (!Array.isArray(prof.traitInventory)) prof.traitInventory = [];
+    if (prof.trait && !prof.traitInventory.includes(prof.trait)) {
+      prof.traitInventory.push(prof.trait);
+    }
+    if (!prof.equippedTrait && prof.trait) prof.equippedTrait = prof.trait;
+    return prof;
   }
 
   function loadProfileFor(user) {
     const accounts = loadAccounts();
     const acc = accounts[user];
-    if (acc && acc.profile) return acc.profile;
+    if (acc && acc.profile) return migrateProfile(acc.profile);
     return getDefaultProfile();
   }
 
@@ -193,7 +235,7 @@
     currentUser = user || null;
     if (currentUser) localStorage.setItem(LS_CURRENT, currentUser);
     else localStorage.removeItem(LS_CURRENT);
-    profile = currentUser ? loadProfileFor(currentUser) : getDefaultProfile();
+    profile = migrateProfile(currentUser ? loadProfileFor(currentUser) : getDefaultProfile());
     renderAccountUI();
     renderWeaponsModal();
   }
@@ -261,10 +303,35 @@
 
   function traitDefs() {
     return {
-      dash: { id: "dash", name: "Dash" },
-      speedy: { id: "speedy", name: "Speedy" },
-      transparency: { id: "transparency", name: "Transparency" },
+      dash: { id: "dash", name: "Dash", meta: "Press Q to dash a short distance" },
+      speedy: { id: "speedy", name: "Speedy", meta: "1.2× movement speed" },
+      transparency: { id: "transparency", name: "Transparency", meta: "20% less visible" },
     };
+  }
+
+  function ensureTraitInInventory(id) {
+    if (!profile) profile = getDefaultProfile();
+    if (!profile.traitInventory.includes(id)) profile.traitInventory.push(id);
+  }
+
+  function getEquippedTrait() {
+    return localPlayer?.trait || profile?.equippedTrait || profile?.trait || null;
+  }
+
+  function setEquippedTrait(id) {
+    if (!profile) profile = getDefaultProfile();
+    profile.equippedTrait = id;
+    profile.trait = id;
+    if (currentUser) saveProfileFor(currentUser, profile);
+    if (localPlayer) {
+      localPlayer.trait = id;
+      if (mode === "host") {
+        broadcast({ type: "trait", id: localPlayer.id, trait: id });
+      } else if (mode === "guest") {
+        sendToHost({ type: "trait", trait: id });
+      }
+    }
+    renderWeaponsModal();
   }
 
   function rollTraitId() {
@@ -818,7 +885,7 @@
     if (!localPlayer) return;
     let dx = 0;
     let dy = 0;
-    const mult = movementMultiplierForTrait(localPlayer.trait || profile?.trait);
+    const mult = movementMultiplierForTrait(getEquippedTrait());
     if (keys["w"] || keys["arrowup"]) dy -= SPEED * mult;
     if (keys["s"] || keys["arrowdown"]) dy += SPEED * mult;
     if (keys["a"] || keys["arrowleft"]) dx -= SPEED * mult;
@@ -862,6 +929,15 @@
       ctx.strokeRect(-14, -4, 26, 8);
       ctx.fillStyle = "#a67c52";
       ctx.fillRect(-20, -5, 7, 10);
+    } else if (pr.kind === "tos_circle") {
+      const radius = pr.r || 14;
+      ctx.fillStyle = "rgba(155, 89, 182, 0.25)";
+      ctx.strokeStyle = "#9b59b6";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
     } else {
       ctx.fillStyle = pr.color || "#fff";
       ctx.beginPath();
@@ -914,6 +990,9 @@
       color: PLAYER_COLORS[0],
       hp: MAX_HP,
       weapon: profile?.equipped || null,
+      trait: getEquippedTrait(),
+      kills: profile?.kills || 0,
+      user: currentUser || null,
     };
     players.clear();
     players.set(localPlayer.id, localPlayer);
@@ -1006,6 +1085,9 @@
         color: PLAYER_COLORS[0],
         hp: MAX_HP,
         weapon: profile?.equipped || null,
+        trait: getEquippedTrait(),
+        kills: profile?.kills || 0,
+        user: currentUser || null,
       };
       players.clear();
       players.set(localPlayer.id, localPlayer);
@@ -1077,7 +1159,7 @@
       type: "join",
       name: getPlayerName(),
       user: currentUser || null,
-      trait: profile?.trait || null,
+      trait: getEquippedTrait(),
       kills: typeof profile?.kills === "number" ? profile.kills : 0,
     });
 
@@ -1096,7 +1178,8 @@
     setStatus("Joined!", "success");
     // send equipped to host
     if (profile?.equipped) sendToHost({ type: "equip", weapon: profile.equipped });
-    if (profile?.trait) sendToHost({ type: "trait", trait: profile.trait });
+    const eqTrait = getEquippedTrait();
+    if (eqTrait) sendToHost({ type: "trait", trait: eqTrait });
     if (typeof profile?.kills === "number") sendToHost({ type: "kills", kills: profile.kills });
   }
 
@@ -1104,12 +1187,18 @@
     if (killsLabelEl && traitLabelEl) {
       const kills = typeof profile?.kills === "number" ? profile.kills : 0;
       killsLabelEl.textContent = String(kills);
-      const t = profile?.trait || null;
+      const t = getEquippedTrait();
       const td = traitDefs();
       traitLabelEl.textContent = t ? (td[t]?.name || t) : "None";
-      if (btnRollTrait) btnRollTrait.disabled = kills < 5;
+      if (btnRollTrait) {
+        btnRollTrait.disabled = !canRollTrait();
+        btnRollTrait.textContent = hasInstantTraitUnlock()
+          ? "Roll Trait"
+          : "Roll Trait (5 kills)";
+      }
     }
     renderBackpack();
+    renderTraitList();
   }
 
   function openWeaponsModal() {
@@ -1121,6 +1210,43 @@
   function closeWeaponsModal() {
     weaponsModalEl.classList.add("hidden");
     weaponsModalEl.setAttribute("aria-hidden", "true");
+  }
+
+  function openSettingsModal() {
+    if (redeemStatusEl) {
+      redeemStatusEl.textContent = "";
+      redeemStatusEl.className = "status";
+    }
+    if (redeemCodeEl) redeemCodeEl.value = "";
+    settingsModalEl.classList.remove("hidden");
+    settingsModalEl.setAttribute("aria-hidden", "false");
+    if (redeemCodeEl) redeemCodeEl.focus();
+  }
+
+  function closeSettingsModal() {
+    settingsModalEl.classList.add("hidden");
+    settingsModalEl.setAttribute("aria-hidden", "true");
+  }
+
+  function setRedeemStatus(msg, type) {
+    if (!redeemStatusEl) return;
+    redeemStatusEl.textContent = msg || "";
+    redeemStatusEl.className = "status" + (type ? " " + type : "");
+  }
+
+  function redeemCode() {
+    const code = (redeemCodeEl?.value || "").trim();
+    if (code !== REDEEM_TOS_CODE) {
+      setRedeemStatus("Invalid code.", "error");
+      return;
+    }
+    if (!profile) profile = getDefaultProfile();
+    ensureWeaponInInventory("tos_rpg");
+    if (currentUser) saveProfileFor(currentUser, profile);
+    setEquipped("tos_rpg");
+    setRedeemStatus("Unlocked: Terms of Service Launcher", "success");
+    setGameStatus("Unlocked: Terms of Service Launcher", "success");
+    renderWeaponsModal();
   }
 
   function renderBackpack() {
@@ -1143,6 +1269,35 @@
           <div class="bp-left">
             <div class="bp-name">${w ? w.name : id}</div>
             <div class="bp-meta">${w ? w.meta : ""}</div>
+          </div>
+          <div class="bp-actions">${btn}</div>
+        </div>`;
+      })
+      .join("");
+  }
+
+  function renderTraitList() {
+    if (!traitListEl) return;
+    const defs = traitDefs();
+    const inv = profile?.traitInventory || [];
+    if (inv.length === 0) {
+      traitListEl.innerHTML = hasInstantTraitUnlock()
+        ? `<p class="help-text">No traits yet. Click <strong>Roll Trait</strong>.</p>`
+        : `<p class="help-text">No traits yet. Get 5 kills, then <strong>Roll Trait</strong>.</p>`;
+      return;
+    }
+    const equipped = getEquippedTrait();
+    traitListEl.innerHTML = inv
+      .map((id) => {
+        const tr = defs[id];
+        const isEq = equipped === id;
+        const btn = isEq
+          ? `<button type="button" class="btn btn-small btn-equipped" disabled>Equipped</button>`
+          : `<button type="button" class="btn btn-small btn-equip" data-equip-trait="${id}">Equip</button>`;
+        return `<div class="bp-item">
+          <div class="bp-left">
+            <div class="bp-name">${tr ? tr.name : id}</div>
+            <div class="bp-meta">${tr ? tr.meta : ""}</div>
           </div>
           <div class="bp-actions">${btn}</div>
         </div>`;
@@ -1181,21 +1336,16 @@
   }
 
   function rollTrait() {
-    const kills = typeof profile?.kills === "number" ? profile.kills : 0;
-    if (kills < 5) {
+    if (!canRollTrait()) {
       setGameStatus("Need 5 kills to roll a trait.", "error");
       return;
     }
     const id = rollTraitId();
-    profile.trait = id;
-    if (currentUser) saveProfileFor(currentUser, profile);
-    if (localPlayer) {
-      localPlayer.trait = id;
-      if (mode === "host") broadcast({ type: "trait", id: localPlayer.id, trait: id });
-      else if (mode === "guest") sendToHost({ type: "trait", trait: id });
-    }
+    ensureTraitInInventory(id);
+    if (!getEquippedTrait()) setEquippedTrait(id);
+    else if (currentUser) saveProfileFor(currentUser, profile);
     const td = traitDefs();
-    setGameStatus(`Trait: ${td[id].name}`, "success");
+    setGameStatus(`Rolled trait: ${td[id].name} — equip in Traits list`, "success");
     renderWeaponsModal();
   }
 
@@ -1211,6 +1361,7 @@
     if (weaponId === "knife") return 500;
     if (weaponId === "bow") return 1000;
     if (weaponId === "dagger") return isThrow ? 1200 : 700;
+    if (weaponId === "tos_rpg") return 2000;
     return 600;
   }
 
@@ -1224,6 +1375,7 @@
     if (weaponId === "knife") return 10;
     if (weaponId === "bow") return 8;
     if (weaponId === "dagger") return 7;
+    if (weaponId === "tos_rpg") return 35;
     return 0;
   }
 
@@ -1350,10 +1502,11 @@
     }
     const dmg = damageOf(weapon);
 
-    if (weapon === "bow" || (weapon === "dagger" && data.throw === true)) {
+    if (weapon === "bow" || weapon === "tos_rpg" || (weapon === "dagger" && data.throw === true)) {
       const ux = fdx / fl;
       const uy = fdy / fl;
-      const speed = weapon === "bow" ? BOW_SPEED : DAGGER_THROW_SPEED;
+      const speed =
+        weapon === "bow" ? BOW_SPEED : weapon === "tos_rpg" ? TOS_SPEED : DAGGER_THROW_SPEED;
       const ang = Math.atan2(uy, ux);
       const half = PLAYER_SIZE / 2;
       const spawnDist = half + 22;
@@ -1365,11 +1518,16 @@
         y: ay + uy * spawnDist,
         vx: ux * speed,
         vy: uy * speed,
-        r: weapon === "bow" ? 8 : 7,
-        life: weapon === "bow" ? BOW_LIFE_SEC : DAGGER_THROW_LIFE_SEC,
+        r: weapon === "tos_rpg" ? 14 : weapon === "bow" ? 8 : 7,
+        life:
+          weapon === "tos_rpg"
+            ? TOS_LIFE_SEC
+            : weapon === "bow"
+              ? BOW_LIFE_SEC
+              : DAGGER_THROW_LIFE_SEC,
         dmg,
-        color: weapon === "bow" ? "#fff8e7" : "#d1b36a",
-        kind: weapon === "bow" ? "arrow" : "dagger",
+        color: weapon === "tos_rpg" ? "#9b59b6" : weapon === "bow" ? "#fff8e7" : "#d1b36a",
+        kind: weapon === "tos_rpg" ? "tos_circle" : weapon === "bow" ? "arrow" : "dagger",
         ang,
       });
       return;
@@ -1429,6 +1587,7 @@
   btnLeave.addEventListener("click", showMenu);
   btnCopyUrl.addEventListener("click", () => copyText(shareUrlInput.value));
   btnWeapons.addEventListener("click", openWeaponsModal);
+  btnSettings.addEventListener("click", openSettingsModal);
   btnCloseWeapons.addEventListener("click", closeWeaponsModal);
   weaponsModalEl.addEventListener("click", (e) => {
     if (e.target === weaponsModalEl) closeWeaponsModal();
@@ -1442,11 +1601,23 @@
     if (!profile) profile = getDefaultProfile();
     rollTrait();
   });
+  btnRedeem.addEventListener("click", redeemCode);
+  btnCloseSettings.addEventListener("click", closeSettingsModal);
+  settingsModalEl.addEventListener("click", (e) => {
+    if (e.target === settingsModalEl) closeSettingsModal();
+  });
   backpackListEl.addEventListener("click", (e) => {
     const t = e.target;
     if (!(t instanceof HTMLElement)) return;
     const id = t.getAttribute("data-equip");
     if (id) setEquipped(id);
+  });
+
+  traitListEl.addEventListener("click", (e) => {
+    const t = e.target;
+    if (!(t instanceof HTMLElement)) return;
+    const id = t.getAttribute("data-equip-trait");
+    if (id) setEquippedTrait(id);
   });
 
   btnKick.addEventListener("click", () => {
@@ -1555,7 +1726,7 @@
   window.addEventListener("keydown", (e) => {
     keys[e.key.toLowerCase()] = true;
     if (e.key.toLowerCase() === "q") {
-      const trait = localPlayer?.trait || profile?.trait;
+      const trait = getEquippedTrait();
       if (trait === "dash" && localPlayer) {
         const t = now();
         if (t >= dashCooldownUntil) {

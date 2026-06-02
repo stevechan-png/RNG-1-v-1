@@ -6,6 +6,11 @@
   const MAX_PLAYERS = 5;
   const PLAYER_COLORS = ["#e74c3c", "#3498db", "#2ecc71", "#f1c40f", "#9b59b6"];
   const IS_HTTPS = window.location.protocol === "https:";
+  const MAX_HP = 100;
+  const BOW_SPEED = 220;
+  const DAGGER_THROW_SPEED = 260;
+  const BOW_LIFE_SEC = 3.5;
+  const DAGGER_THROW_LIFE_SEC = 2;
 
   const menuEl = document.getElementById("menu");
   const gameEl = document.getElementById("game");
@@ -22,8 +27,14 @@
   const btnJoin = document.getElementById("btnJoin");
   const btnCreate = document.getElementById("btnCreate");
   const btnLeave = document.getElementById("btnLeave");
+  const btnRoll = document.getElementById("btnRoll");
+  const btnBackpack = document.getElementById("btnBackpack");
   const btnCopyUrl = document.getElementById("btnCopyUrl");
   const btnCopyCode = document.getElementById("btnCopyCode");
+  const gameStatusEl = document.getElementById("gameStatus");
+  const backpackModalEl = document.getElementById("backpackModal");
+  const backpackListEl = document.getElementById("backpackList");
+  const btnCloseBackpack = document.getElementById("btnCloseBackpack");
   const playerMenuEl = document.getElementById("playerMenu");
   const playerMenuTitleEl = document.getElementById("playerMenuTitle");
   const kickReasonInput = document.getElementById("kickReason");
@@ -32,6 +43,14 @@
   const kickedOverlayEl = document.getElementById("kickedOverlay");
   const kickedMessageEl = document.getElementById("kickedMessage");
   const btnKickedOk = document.getElementById("btnKickedOk");
+  const accountLoggedOutEl = document.getElementById("accountLoggedOut");
+  const accountLoggedInEl = document.getElementById("accountLoggedIn");
+  const accUserEl = document.getElementById("accUser");
+  const accPassEl = document.getElementById("accPass");
+  const btnAccLogin = document.getElementById("btnAccLogin");
+  const btnAccCreate = document.getElementById("btnAccCreate");
+  const btnAccLogout = document.getElementById("btnAccLogout");
+  const accWhoEl = document.getElementById("accWho");
 
   let keys = {};
   let animId = null;
@@ -46,6 +65,20 @@
   let myPeerId = null;
   let menuTargetPlayer = null;
   let wasKicked = false;
+  let projectiles = [];
+  let lastLoopTime = 0;
+  let projSyncAccum = 0;
+  let attackCooldownUntil = 0;
+  let clickDownAt = 0;
+  let lastAim = { x: WORLD_W / 2, y: WORLD_H / 2 };
+  let rollAnimTimer = null;
+  let rollAnimUntil = 0;
+
+  // local account persistence (per device)
+  const LS_ACCOUNTS = "bg_accounts_v1";
+  const LS_CURRENT = "bg_current_user_v1";
+  let currentUser = null;
+  let profile = null; // { inventory: string[], equipped: string|null }
 
   function getPlayerName() {
     return (playerNameInput.value || "Player").trim().slice(0, 20) || "Player";
@@ -56,14 +89,139 @@
     statusEl.className = "status" + (type ? " " + type : "");
   }
 
+  function setGameStatus(msg, type) {
+    if (!gameStatusEl) return;
+    gameStatusEl.textContent = msg || "";
+    gameStatusEl.style.color =
+      type === "success" ? "#2ecc71" : type === "error" ? "#e74c3c" : "#f39c12";
+  }
+
   function setBusy(busy) {
     btnSolo.disabled = busy;
     btnJoin.disabled = busy;
     btnCreate.disabled = busy;
+    btnRoll.disabled = busy;
+    btnBackpack.disabled = busy;
   }
 
   function generateCode() {
     return String(Math.floor(100000 + Math.random() * 900000));
+  }
+
+  function now() {
+    return performance.now();
+  }
+
+  function weaponDefs() {
+    return {
+      knife: {
+        id: "knife",
+        name: "Knife",
+        meta: "Close range • 10 dmg • 0.5s cd",
+      },
+      bow: {
+        id: "bow",
+        name: "Bow",
+        meta: "Arrow • 8 dmg • 1.0s cd",
+      },
+      dagger: {
+        id: "dagger",
+        name: "Dagger",
+        meta: "Short: melee • Long: throw • 7 dmg",
+      },
+    };
+  }
+
+  function rollWeaponId() {
+    // Knife must be 1/2 exactly. Remaining half is split between Bow and Dagger.
+    // (Bow and Dagger keep their relative rarity vs each other: Bow 3x more common than Dagger.)
+    const r = Math.random();
+    if (r < 0.5) return "knife"; // 1/2
+    // remaining 1/2: Bow 3/4, Dagger 1/4  => Bow 3/8 overall, Dagger 1/8 overall
+    return Math.random() < 0.75 ? "bow" : "dagger";
+  }
+
+  function loadAccounts() {
+    try {
+      return JSON.parse(localStorage.getItem(LS_ACCOUNTS) || "{}") || {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveAccounts(obj) {
+    localStorage.setItem(LS_ACCOUNTS, JSON.stringify(obj));
+  }
+
+  async function sha256(text) {
+    const enc = new TextEncoder().encode(text);
+    const buf = await crypto.subtle.digest("SHA-256", enc);
+    const arr = Array.from(new Uint8Array(buf));
+    return arr.map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  function normalizeUser(u) {
+    return (u || "").trim().slice(0, 20);
+  }
+
+  function getDefaultProfile() {
+    return { inventory: [], equipped: null };
+  }
+
+  function loadProfileFor(user) {
+    const accounts = loadAccounts();
+    const acc = accounts[user];
+    if (acc && acc.profile) return acc.profile;
+    return getDefaultProfile();
+  }
+
+  function saveProfileFor(user, prof) {
+    const accounts = loadAccounts();
+    if (!accounts[user]) return;
+    accounts[user].profile = prof;
+    saveAccounts(accounts);
+  }
+
+  function setCurrentUser(user) {
+    currentUser = user || null;
+    if (currentUser) localStorage.setItem(LS_CURRENT, currentUser);
+    else localStorage.removeItem(LS_CURRENT);
+    profile = currentUser ? loadProfileFor(currentUser) : getDefaultProfile();
+    renderAccountUI();
+    renderBackpack();
+  }
+
+  function renderAccountUI() {
+    if (!accountLoggedOutEl) return;
+    if (currentUser) {
+      accountLoggedOutEl.classList.add("hidden");
+      accountLoggedInEl.classList.remove("hidden");
+      accWhoEl.textContent = currentUser;
+    } else {
+      accountLoggedOutEl.classList.remove("hidden");
+      accountLoggedInEl.classList.add("hidden");
+      accWhoEl.textContent = "";
+    }
+  }
+
+  function ensureWeaponInInventory(id) {
+    if (!profile) profile = getDefaultProfile();
+    if (!profile.inventory.includes(id)) profile.inventory.push(id);
+  }
+
+  function setEquipped(id) {
+    if (!profile) profile = getDefaultProfile();
+    profile.equipped = id;
+    if (currentUser) saveProfileFor(currentUser, profile);
+    if (localPlayer) {
+      localPlayer.weapon = id;
+      if (mode === "host") {
+        broadcast({ type: "equip", id: localPlayer.id, weapon: id });
+      } else if (mode === "guest") {
+        sendToHost({ type: "equip", weapon: id });
+      }
+    }
+    renderBackpack();
   }
 
   function peerOptions(overrides) {
@@ -248,6 +406,9 @@
     closePlayerMenu();
     hideKickedOverlay();
     wasKicked = false;
+    projectiles = [];
+    lastLoopTime = 0;
+    projSyncAccum = 0;
     peerToConn.clear();
     for (const c of guestConns) {
       try {
@@ -297,9 +458,10 @@
   function applyState(list, selfId) {
     players.clear();
     for (const p of list) {
-      players.set(p.id, { ...p });
+      players.set(p.id, { dirX: 1, dirY: 0, weapon: null, hp: MAX_HP, ...p });
       if (p.id === selfId) localPlayer = players.get(p.id);
     }
+    updateP1Cursor();
   }
 
   function handleMessage(msg, fromConn) {
@@ -315,6 +477,19 @@
       case "playerLeft":
         players.delete(msg.id);
         break;
+      case "hp":
+        if (players.has(msg.id)) players.get(msg.id).hp = msg.hp;
+        break;
+      case "equip":
+        if (players.has(msg.id)) players.get(msg.id).weapon = msg.weapon;
+        break;
+      case "face":
+        if (players.has(msg.id)) {
+          const p = players.get(msg.id);
+          p.dirX = msg.dirX;
+          p.dirY = msg.dirY;
+        }
+        break;
       case "move": {
         const p = players.get(msg.id);
         if (p) {
@@ -326,6 +501,19 @@
         }
         break;
       }
+      case "projSpawn":
+        projectiles.push({ ...msg.p });
+        break;
+      case "projTick":
+        // Host sends snapshot positions for smooth rendering on guests
+        projectiles = msg.list.map((p) => ({
+          ...p,
+          ang: typeof p.ang === "number" ? p.ang : Math.atan2(p.vy, p.vx),
+        }));
+        break;
+      case "projRemove":
+        projectiles = projectiles.filter((p) => p.pid !== msg.pid);
+        break;
       case "kicked":
         break;
     }
@@ -350,6 +538,8 @@
           x: 120 + slot * 40,
           y: WORLD_H / 2,
           color: PLAYER_COLORS[slot],
+          hp: MAX_HP,
+          weapon: null,
         };
         players.set(player.id, player);
         conn.send({
@@ -358,6 +548,21 @@
           players: allPlayers(),
         });
         broadcast({ type: "playerJoined", player }, conn);
+      } else if (data.type === "equip") {
+        const p = players.get(conn.peer);
+        if (p) {
+          p.weapon = data.weapon || null;
+          broadcast({ type: "equip", id: p.id, weapon: p.weapon }, conn);
+        }
+      } else if (data.type === "attack") {
+        handleAttack(conn.peer, data);
+      } else if (data.type === "face") {
+        const p = players.get(conn.peer);
+        if (p) {
+          p.dirX = data.dirX;
+          p.dirY = data.dirY;
+          broadcast({ type: "face", id: p.id, dirX: p.dirX, dirY: p.dirY }, conn);
+        }
       } else {
         handleMessage(data, conn);
       }
@@ -399,6 +604,8 @@
     canvas.width = WORLD_W;
     canvas.height = WORLD_H;
     if (animId) cancelAnimationFrame(animId);
+    lastLoopTime = 0;
+    projSyncAccum = 0;
     animId = requestAnimationFrame(loop);
     updateP1Cursor();
   }
@@ -447,7 +654,6 @@
     ctx.fillRect(p.x - tw / 2 - pad, labelY - 14, tw + pad * 2, 18);
     if (p.slot === 0) {
       const prefixW = ctx.measureText(prefix).width;
-      const nameW = ctx.measureText(p.name).width;
       const startX = p.x - tw / 2;
       ctx.textAlign = "left";
       ctx.fillStyle = "#fff";
@@ -458,6 +664,55 @@
     } else {
       ctx.fillStyle = "#fff";
       ctx.fillText(label, p.x, labelY);
+    }
+
+    // HP above name
+    const hp = typeof p.hp === "number" ? p.hp : MAX_HP;
+    const hpLabel = `HP: ${Math.max(0, Math.floor(hp))}`;
+    ctx.font = "12px Segoe UI, sans-serif";
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    const htw = ctx.measureText(hpLabel).width;
+    const hpY = labelY - 18;
+    ctx.fillRect(p.x - htw / 2 - pad, hpY - 12, htw + pad * 2, 16);
+    ctx.fillStyle = hp > 50 ? "#2ecc71" : hp > 20 ? "#f1c40f" : "#e74c3c";
+    ctx.fillText(hpLabel, p.x, hpY);
+
+    // Weapon in hand (simple sprite)
+    const w = p.weapon;
+    if (w) {
+      const dx = typeof p.dirX === "number" ? p.dirX : 1;
+      const dy = typeof p.dirY === "number" ? p.dirY : 0;
+      const ang = Math.atan2(dy, dx);
+      const handDist = half + 6;
+      const hx = p.x + Math.cos(ang) * handDist;
+      const hy = p.y + Math.sin(ang) * handDist;
+      ctx.save();
+      ctx.translate(hx, hy);
+      ctx.rotate(ang);
+      if (w === "knife") {
+        ctx.fillStyle = "#dcdcdc";
+        ctx.fillRect(0, -2, 18, 4);
+        ctx.fillStyle = "#8b5a2b";
+        ctx.fillRect(-6, -3, 6, 6);
+      } else if (w === "dagger") {
+        ctx.fillStyle = "#c8b28a";
+        ctx.fillRect(0, -2, 16, 4);
+        ctx.fillStyle = "#a67c52";
+        ctx.fillRect(-6, -3, 6, 6);
+      } else if (w === "bow") {
+        ctx.strokeStyle = "#d1b36a";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(4, 0, 12, -1.1, 1.1);
+        ctx.stroke();
+        ctx.strokeStyle = "rgba(255,255,255,0.65)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-6, -10);
+        ctx.lineTo(-6, 10);
+        ctx.stroke();
+      }
+      ctx.restore();
     }
   }
 
@@ -487,6 +742,44 @@
     sendMove(nx, ny);
   }
 
+  function drawProjectile(pr) {
+    const ang = typeof pr.ang === "number" ? pr.ang : Math.atan2(pr.vy, pr.vx);
+    ctx.save();
+    ctx.translate(pr.x, pr.y);
+    ctx.rotate(ang);
+    if (pr.kind === "arrow") {
+      ctx.fillStyle = "#fff8e7";
+      ctx.strokeStyle = "#1a1a1a";
+      ctx.lineWidth = 1.5;
+      ctx.fillRect(-22, -3.5, 36, 7);
+      ctx.strokeRect(-22, -3.5, 36, 7);
+      ctx.fillStyle = "#c0392b";
+      ctx.beginPath();
+      ctx.moveTo(16, 0);
+      ctx.lineTo(5, -9);
+      ctx.lineTo(5, 9);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#8b5a2b";
+      ctx.fillRect(-26, -2, 8, 4);
+    } else if (pr.kind === "dagger") {
+      ctx.fillStyle = "#c8b28a";
+      ctx.strokeStyle = "#333";
+      ctx.lineWidth = 1;
+      ctx.fillRect(-14, -4, 26, 8);
+      ctx.strokeRect(-14, -4, 26, 8);
+      ctx.fillStyle = "#a67c52";
+      ctx.fillRect(-20, -5, 7, 10);
+    } else {
+      ctx.fillStyle = pr.color || "#fff";
+      ctx.beginPath();
+      ctx.arc(0, 0, pr.r || 7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
   function render() {
     drawLandscape();
     const sorted = allPlayers().sort((a, b) => a.slot - b.slot);
@@ -494,9 +787,25 @@
       if (p.id !== localPlayer?.id) drawPlayer(p, false);
     }
     if (localPlayer) drawPlayer(localPlayer, true);
+    for (const pr of projectiles) drawProjectile(pr);
   }
 
-  function loop() {
+  function loop(ts) {
+    if (!lastLoopTime) lastLoopTime = ts;
+    const dt = Math.min(0.05, (ts - lastLoopTime) / 1000);
+    lastLoopTime = ts;
+
+    if (mode === "solo" || mode === "host") {
+      stepProjectiles(dt);
+      if (mode === "host" && guestConns.length > 0 && projectiles.length > 0) {
+        projSyncAccum += dt;
+        if (projSyncAccum >= 0.05) {
+          projSyncAccum = 0;
+          broadcastProjTick();
+        }
+      }
+    }
+
     update();
     render();
     animId = requestAnimationFrame(loop);
@@ -512,6 +821,8 @@
       x: WORLD_W / 2,
       y: WORLD_H / 2,
       color: PLAYER_COLORS[0],
+      hp: MAX_HP,
+      weapon: profile?.equipped || null,
     };
     players.clear();
     players.set(localPlayer.id, localPlayer);
@@ -602,6 +913,8 @@
         x: 120,
         y: WORLD_H / 2,
         color: PLAYER_COLORS[0],
+        hp: MAX_HP,
+        weapon: profile?.equipped || null,
       };
       players.clear();
       players.set(localPlayer.id, localPlayer);
@@ -626,6 +939,7 @@
       btnCopyCode.classList.remove("hidden");
       btnCopyCode.onclick = () => copyText(code);
       setStatus("Room ready — waiting for players…", "success");
+      updateP1Cursor();
     } catch (e) {
       p.destroy();
       if (e.message && e.message.includes("in use")) {
@@ -683,6 +997,250 @@
 
     showGame(`Room: ${code}`);
     setStatus("Joined!", "success");
+    // send equipped to host
+    if (profile?.equipped) sendToHost({ type: "equip", weapon: profile.equipped });
+  }
+
+  function openBackpack() {
+    renderBackpack();
+    backpackModalEl.classList.remove("hidden");
+    backpackModalEl.setAttribute("aria-hidden", "false");
+  }
+
+  function closeBackpack() {
+    backpackModalEl.classList.add("hidden");
+    backpackModalEl.setAttribute("aria-hidden", "true");
+  }
+
+  function renderBackpack() {
+    if (!backpackListEl) return;
+    const defs = weaponDefs();
+    const inv = profile?.inventory || [];
+    if (inv.length === 0) {
+      backpackListEl.innerHTML = `<p class="help-text">No weapons yet. Click <strong>Roll Weapon</strong>.</p>`;
+      return;
+    }
+    const equipped = profile?.equipped || null;
+    backpackListEl.innerHTML = inv
+      .map((id) => {
+        const w = defs[id];
+        const isEq = equipped === id;
+        const btn = isEq
+          ? `<button type="button" class="btn btn-small btn-equipped" disabled>Equipped</button>`
+          : `<button type="button" class="btn btn-small btn-equip" data-equip="${id}">Equip</button>`;
+        return `<div class="bp-item">
+          <div class="bp-left">
+            <div class="bp-name">${w ? w.name : id}</div>
+            <div class="bp-meta">${w ? w.meta : ""}</div>
+          </div>
+          <div class="bp-actions">${btn}</div>
+        </div>`;
+      })
+      .join("");
+  }
+
+  function rollWeapon() {
+    if (rollAnimTimer) {
+      clearInterval(rollAnimTimer);
+      rollAnimTimer = null;
+    }
+    const defs = weaponDefs();
+    const order = ["knife", "bow", "dagger"];
+    const start = now();
+    rollAnimUntil = start + 950;
+    setGameStatus("Rolling…", "");
+    let i = 0;
+    rollAnimTimer = setInterval(() => {
+      const t = now();
+      const id = order[i % order.length];
+      i++;
+      setGameStatus(`Rolling… ${defs[id].name}`, "");
+      if (t >= rollAnimUntil) {
+        clearInterval(rollAnimTimer);
+        rollAnimTimer = null;
+        const finalId = rollWeaponId();
+        ensureWeaponInInventory(finalId);
+        if (!profile.equipped) profile.equipped = finalId;
+        if (currentUser) saveProfileFor(currentUser, profile);
+        setEquipped(profile.equipped);
+        setGameStatus(`Rolled: ${defs[finalId].name}`, "success");
+        showShareBox(roomCode || "");
+      }
+    }, 90);
+  }
+
+  function canAttack() {
+    return localPlayer && (mode === "solo" || mode === "host" || mode === "guest");
+  }
+
+  function getEquippedWeapon() {
+    return localPlayer?.weapon || profile?.equipped || null;
+  }
+
+  function weaponCooldownMs(weaponId, isThrow) {
+    if (weaponId === "knife") return 500;
+    if (weaponId === "bow") return 1000;
+    if (weaponId === "dagger") return isThrow ? 1200 : 700;
+    return 600;
+  }
+
+  function meleeRange(weaponId) {
+    if (weaponId === "knife") return 55;
+    if (weaponId === "dagger") return 50;
+    return 0;
+  }
+
+  function damageOf(weaponId) {
+    if (weaponId === "knife") return 10;
+    if (weaponId === "bow") return 8;
+    if (weaponId === "dagger") return 7;
+    return 0;
+  }
+
+  function performAttack(payload) {
+    if (!localPlayer) return;
+    if (mode === "solo" || mode === "host") {
+      handleAttack(localPlayer.id, payload);
+    } else if (mode === "guest") {
+      sendToHost({ type: "attack", ...payload });
+    }
+  }
+
+  function broadcastProjTick() {
+    broadcast({
+      type: "projTick",
+      list: projectiles.map((p) => ({
+        pid: p.pid,
+        owner: p.owner,
+        x: p.x,
+        y: p.y,
+        vx: p.vx,
+        vy: p.vy,
+        r: p.r,
+        life: p.life,
+        dmg: p.dmg,
+        color: p.color,
+        kind: p.kind,
+        ang: p.ang,
+      })),
+    });
+  }
+
+  function spawnProjectile(p) {
+    projectiles.push(p);
+    if (mode === "host") {
+      broadcast({ type: "projSpawn", p });
+      if (guestConns.length > 0) broadcastProjTick();
+    }
+  }
+
+  function removeProjectile(pid) {
+    projectiles = projectiles.filter((p) => p.pid !== pid);
+    if (mode === "host") broadcast({ type: "projRemove", pid });
+  }
+
+  function stepProjectiles(dt) {
+    if (mode !== "host" && mode !== "solo") return;
+    if (projectiles.length === 0) return;
+    const toRemove = [];
+    for (const pr of projectiles) {
+      pr.x += pr.vx * dt;
+      pr.y += pr.vy * dt;
+      pr.ang = Math.atan2(pr.vy, pr.vx);
+      pr.life -= dt;
+      if (pr.life <= 0) {
+        toRemove.push(pr.pid);
+        continue;
+      }
+      if (pr.x < -30 || pr.x > WORLD_W + 30 || pr.y < -30 || pr.y > WORLD_H + 30) {
+        toRemove.push(pr.pid);
+        continue;
+      }
+      for (const p of allPlayers()) {
+        if (p.id === pr.owner) continue;
+        if (typeof p.hp !== "number" || p.hp <= 0) continue;
+        const half = PLAYER_SIZE / 2;
+        const hitR = pr.kind === "arrow" ? 10 : pr.r || 8;
+        const dx = clamp(pr.x, p.x - half, p.x + half) - pr.x;
+        const dy = clamp(pr.y, p.y - half, p.y + half) - pr.y;
+        if (dx * dx + dy * dy <= hitR * hitR) {
+          applyDamage(p.id, pr.dmg, pr.owner);
+          toRemove.push(pr.pid);
+          break;
+        }
+      }
+    }
+    for (const pid of toRemove) removeProjectile(pid);
+  }
+
+  function applyDamage(targetId, dmg, attackerId) {
+    const t = players.get(targetId);
+    if (!t) return;
+    t.hp = Math.max(0, (typeof t.hp === "number" ? t.hp : MAX_HP) - dmg);
+    const msg = { type: "hp", id: targetId, hp: t.hp, attackerId };
+    if (mode === "host") broadcast(msg);
+    handleMessage(msg);
+  }
+
+  function handleAttack(attackerId, data) {
+    if (mode !== "host" && mode !== "solo") return;
+    const attacker = players.get(attackerId);
+    if (!attacker || attacker.hp <= 0) return;
+    const weapon = data.weapon;
+    if (!weapon) return;
+
+    const ax = attacker.x;
+    const ay = attacker.y;
+    const aimX = clamp(data.aimX, 0, WORLD_W);
+    const aimY = clamp(data.aimY, 0, WORLD_H);
+    const fdx = aimX - ax;
+    const fdy = aimY - ay;
+    const fl = Math.hypot(fdx, fdy) || 1;
+    attacker.dirX = fdx / fl;
+    attacker.dirY = fdy / fl;
+    if (mode === "host") {
+      broadcast({ type: "face", id: attacker.id, dirX: attacker.dirX, dirY: attacker.dirY });
+    }
+    const dmg = damageOf(weapon);
+
+    if (weapon === "bow" || (weapon === "dagger" && data.throw === true)) {
+      const ux = fdx / fl;
+      const uy = fdy / fl;
+      const speed = weapon === "bow" ? BOW_SPEED : DAGGER_THROW_SPEED;
+      const ang = Math.atan2(uy, ux);
+      const half = PLAYER_SIZE / 2;
+      const spawnDist = half + 22;
+      const pid = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      spawnProjectile({
+        pid,
+        owner: attackerId,
+        x: ax + ux * spawnDist,
+        y: ay + uy * spawnDist,
+        vx: ux * speed,
+        vy: uy * speed,
+        r: weapon === "bow" ? 8 : 7,
+        life: weapon === "bow" ? BOW_LIFE_SEC : DAGGER_THROW_LIFE_SEC,
+        dmg,
+        color: weapon === "bow" ? "#fff8e7" : "#d1b36a",
+        kind: weapon === "bow" ? "arrow" : "dagger",
+        ang,
+      });
+      return;
+    }
+
+    const range = meleeRange(weapon);
+    let best = null;
+    let bestD = Infinity;
+    for (const p of allPlayers()) {
+      if (p.id === attackerId) continue;
+      if (p.hp <= 0) continue;
+      const d = Math.hypot(p.x - ax, p.y - ay);
+      if (d <= range && d < bestD) {
+        best = p;
+        bestD = d;
+      }
+    }
+    if (best) applyDamage(best.id, dmg, attackerId);
   }
 
   btnSolo.addEventListener("click", () => {
@@ -723,6 +1281,21 @@
 
   btnLeave.addEventListener("click", showMenu);
   btnCopyUrl.addEventListener("click", () => copyText(shareUrlInput.value));
+  btnRoll.addEventListener("click", () => {
+    if (!profile) profile = getDefaultProfile();
+    rollWeapon();
+  });
+  btnBackpack.addEventListener("click", openBackpack);
+  btnCloseBackpack.addEventListener("click", closeBackpack);
+  backpackModalEl.addEventListener("click", (e) => {
+    if (e.target === backpackModalEl) closeBackpack();
+  });
+  backpackListEl.addEventListener("click", (e) => {
+    const t = e.target;
+    if (!(t instanceof HTMLElement)) return;
+    const id = t.getAttribute("data-equip");
+    if (id) setEquipped(id);
+  });
 
   btnKick.addEventListener("click", () => {
     if (!menuTargetPlayer) return;
@@ -751,6 +1324,44 @@
     if (target) openPlayerMenu(target);
   });
 
+  // Combat: aim at click (mousedown/up for dagger long-throw)
+  canvas.addEventListener("mousedown", (e) => {
+    if (!canAttack()) return;
+    if (kickedOverlayEl && !kickedOverlayEl.classList.contains("hidden")) return;
+    if (!playerMenuEl.classList.contains("hidden")) return;
+    if (!backpackModalEl.classList.contains("hidden")) return;
+    const { x, y } = getCanvasCoords(e.clientX, e.clientY);
+    lastAim = { x, y };
+    clickDownAt = now();
+  });
+
+  canvas.addEventListener("mouseup", (e) => {
+    if (!canAttack()) return;
+    const weapon = getEquippedWeapon();
+    if (!weapon) {
+      setGameStatus("No weapon equipped. Roll one first.", "error");
+      return;
+    }
+    const { x, y } = getCanvasCoords(e.clientX, e.clientY);
+    lastAim = { x, y };
+    // update facing for local render + sync
+    if (localPlayer) {
+      const dx = x - localPlayer.x;
+      const dy = y - localPlayer.y;
+      const len = Math.hypot(dx, dy) || 1;
+      localPlayer.dirX = dx / len;
+      localPlayer.dirY = dy / len;
+      if (mode === "host") broadcast({ type: "face", id: localPlayer.id, dirX: localPlayer.dirX, dirY: localPlayer.dirY });
+      else if (mode === "guest") sendToHost({ type: "face", dirX: localPlayer.dirX, dirY: localPlayer.dirY });
+    }
+    const heldMs = now() - (clickDownAt || now());
+    const isThrow = weapon === "dagger" && heldMs >= 350;
+    const cd = weaponCooldownMs(weapon, isThrow);
+    if (now() < attackCooldownUntil) return;
+    attackCooldownUntil = now() + cd;
+    performAttack({ weapon, aimX: x, aimY: y, throw: isThrow });
+  });
+
   window.addEventListener("keydown", (e) => {
     keys[e.key.toLowerCase()] = true;
     if (
@@ -771,6 +1382,56 @@
   if (joinParam) {
     joinCodeInput.value = joinParam.replace(/\D/g, "").slice(0, 6);
   }
+
+  // Account boot
+  try {
+    const remembered = localStorage.getItem(LS_CURRENT);
+    if (remembered) setCurrentUser(remembered);
+    else setCurrentUser(null);
+  } catch {
+    setCurrentUser(null);
+  }
+
+  btnAccCreate.addEventListener("click", async () => {
+    const u = normalizeUser(accUserEl.value);
+    const p = accPassEl.value || "";
+    if (!u || p.length < 3) {
+      setStatus("Enter username and a password (3+ chars).", "error");
+      return;
+    }
+    const accounts = loadAccounts();
+    if (accounts[u]) {
+      setStatus("Username already exists on this device.", "error");
+      return;
+    }
+    const hash = await sha256(p);
+    accounts[u] = { passHash: hash, profile: getDefaultProfile() };
+    saveAccounts(accounts);
+    setCurrentUser(u);
+    setStatus("Account created (saved on this device).", "success");
+  });
+
+  btnAccLogin.addEventListener("click", async () => {
+    const u = normalizeUser(accUserEl.value);
+    const p = accPassEl.value || "";
+    const accounts = loadAccounts();
+    if (!accounts[u]) {
+      setStatus("No such account on this device.", "error");
+      return;
+    }
+    const hash = await sha256(p);
+    if (hash !== accounts[u].passHash) {
+      setStatus("Wrong password.", "error");
+      return;
+    }
+    setCurrentUser(u);
+    setStatus("Logged in.", "success");
+  });
+
+  btnAccLogout.addEventListener("click", () => {
+    setCurrentUser(null);
+    setStatus("Logged out.", "success");
+  });
 
   playerNameInput.focus();
 })();

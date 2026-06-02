@@ -39,6 +39,30 @@
         <p class="share-hint">They open this link and use the same room code, or click the link to auto-fill it.</p>
       </div>
 
+      <div class="divider">Account</div>
+
+      <div id="accountBox" class="account-box">
+        <div id="accountLoggedOut">
+          <label class="field">
+            <span>Username</span>
+            <input id="accUser" type="text" maxlength="20" placeholder="Username" autocomplete="username" />
+          </label>
+          <label class="field">
+            <span>Password</span>
+            <input id="accPass" type="password" maxlength="64" placeholder="Password" autocomplete="current-password" />
+          </label>
+          <div class="account-row">
+            <button type="button" id="btnAccLogin" class="btn btn-primary">Log in</button>
+            <button type="button" id="btnAccCreate" class="btn btn-secondary">Create</button>
+          </div>
+          <p class="help-text">Accounts are saved on this device (localStorage). Not shared across devices.</p>
+        </div>
+        <div id="accountLoggedIn" class="hidden">
+          <p class="account-welcome">Logged in as <strong id="accWho"></strong></p>
+          <button type="button" id="btnAccLogout" class="btn btn-secondary">Log out</button>
+        </div>
+      </div>
+
       <p id="status" class="status" aria-live="polite"></p>
       <p class="help-text">No install needed — open this page, create a room, share the link. Works on GitHub Pages.</p>
     </div>
@@ -48,12 +72,23 @@
     <div class="hud">
       <span id="roomLabel"></span>
       <span class="hint">WASD to move</span>
+      <span id="gameStatus" class="game-status"></span>
+      <button type="button" id="btnRoll" class="btn btn-small">Roll Weapon</button>
+      <button type="button" id="btnBackpack" class="btn btn-small">Backpack</button>
       <button type="button" id="btnCopyCode" class="btn btn-small hidden">Copy code</button>
       <button type="button" id="btnLeave" class="btn btn-small">Leave</button>
     </div>
     <p id="gameShareHint" class="game-share-hint hidden"></p>
     <div class="canvas-wrap">
       <canvas id="canvas" width="800" height="500"></canvas>
+    </div>
+  </div>
+
+  <div id="backpackModal" class="modal hidden" aria-hidden="true">
+    <div class="modal-card">
+      <h2>Backpack</h2>
+      <div id="backpackList" class="backpack-list"></div>
+      <button type="button" id="btnCloseBackpack" class="btn btn-secondary">Close</button>
     </div>
   </div>
 

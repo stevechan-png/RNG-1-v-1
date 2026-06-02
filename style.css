@@ -214,6 +214,26 @@ body {
   line-height: 1.35;
 }
 
+.account-box {
+  margin-top: 0.75rem;
+}
+
+.account-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.account-row .btn {
+  margin-bottom: 0;
+}
+
+.account-welcome {
+  margin-bottom: 0.75rem;
+  color: #cfe;
+  text-align: center;
+}
+
 .game-share-hint {
   width: min(800px, 100%);
   font-size: 0.8rem;
@@ -238,6 +258,13 @@ body {
   color: #889;
   font-size: 0.85rem;
   flex: 1;
+}
+
+.game-status {
+  font-size: 0.85rem;
+  color: #f39c12;
+  min-width: 140px;
+  text-align: right;
 }
 
 #roomLabel {
@@ -293,6 +320,61 @@ body {
   background: linear-gradient(135deg, #c0392b, #922b21);
   color: #fff;
   margin-bottom: 0.5rem;
+}
+
+.backpack-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  max-height: 50vh;
+  overflow: auto;
+  padding-right: 0.25rem;
+}
+
+.bp-item {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 0.6rem 0.7rem;
+}
+
+.bp-left {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.bp-name {
+  font-weight: 700;
+  color: #fff;
+}
+
+.bp-meta {
+  font-size: 0.78rem;
+  color: #9ab;
+  line-height: 1.2;
+}
+
+.bp-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.btn-equip {
+  background: #2ecc71;
+  color: #062;
+}
+
+.btn-equipped {
+  background: #3498db;
+  color: #fff;
 }
 
 .kicked-overlay {

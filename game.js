@@ -14,6 +14,8 @@
   const TOS_SPEED = Math.round(BOW_SPEED * 1.3);
   const TOS_LIFE_SEC = 4;
   const REDEEM_TOS_CODE = "ur3adthet3rm50fs3r1ve";
+  const ROLLING_MS = 20000;
+  const DEAD_ALPHA = 0.15;
 
   const menuEl = document.getElementById("menu");
   const gameEl = document.getElementById("game");
@@ -30,6 +32,7 @@
   const btnJoin = document.getElementById("btnJoin");
   const btnCreate = document.getElementById("btnCreate");
   const btnLeave = document.getElementById("btnLeave");
+  const btnStartGame = document.getElementById("btnStartGame");
   const btnWeapons = document.getElementById("btnWeapons");
   const btnSettings = document.getElementById("btnSettings");
   const btnCopyUrl = document.getElementById("btnCopyUrl");
@@ -57,6 +60,11 @@
   const kickedOverlayEl = document.getElementById("kickedOverlay");
   const kickedMessageEl = document.getElementById("kickedMessage");
   const btnKickedOk = document.getElementById("btnKickedOk");
+  const slainFeedEl = document.getElementById("slainFeed");
+  const winOverlayEl = document.getElementById("winOverlay");
+  const winMessageEl = document.getElementById("winMessage");
+  const voteStatusEl = document.getElementById("voteStatus");
+  const btnVoteNext = document.getElementById("btnVoteNext");
   const accountLoggedOutEl = document.getElementById("accountLoggedOut");
   const accountLoggedInEl = document.getElementById("accountLoggedIn");
   const accUserEl = document.getElementById("accUser");
@@ -90,6 +98,12 @@
   let adminHoldTimer = null;
   let suppressNextAttack = false;
   let dashCooldownUntil = 0;
+  let matchPhase = "lobby";
+  let phaseEndsAt = 0;
+  let roomLocked = false;
+  let winnerId = null;
+  let nextGameVotes = new Set();
+  let hasVotedNext = false;
 
   // local account persistence (per device)
   const LS_ACCOUNTS = "bg_accounts_v1";
@@ -127,6 +141,29 @@
 
   function now() {
     return performance.now();
+  }
+
+  function isTypingInField() {
+    const el = document.activeElement;
+    if (!el) return false;
+    const tag = el.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    return el.isContentEditable === true;
+  }
+
+  function isGameScreenActive() {
+    return gameEl.classList.contains("active");
+  }
+
+  function clearMovementKeys() {
+    keys["w"] = false;
+    keys["a"] = false;
+    keys["s"] = false;
+    keys["d"] = false;
+    keys["arrowup"] = false;
+    keys["arrowdown"] = false;
+    keys["arrowleft"] = false;
+    keys["arrowright"] = false;
   }
 
   function weaponDefs() {
@@ -259,6 +296,10 @@
   }
 
   function setEquipped(id) {
+    if (!canUseWeapons()) {
+      setGameStatus("Equip only during rolling or fighting.", "error");
+      return;
+    }
     if (!profile) profile = getDefaultProfile();
     profile.equipped = id;
     if (currentUser) saveProfileFor(currentUser, profile);
@@ -319,6 +360,10 @@
   }
 
   function setEquippedTrait(id) {
+    if (!canUseWeapons()) {
+      setGameStatus("Equip traits only during rolling or fighting.", "error");
+      return;
+    }
     if (!profile) profile = getDefaultProfile();
     profile.equippedTrait = id;
     profile.trait = id;
@@ -349,6 +394,227 @@
 
   function alphaForTrait(trait) {
     return trait === "transparency" ? 0.8 : 1;
+  }
+
+  function isMultiplayerMatch() {
+    return mode === "host" || mode === "guest";
+  }
+
+  function isLocalPlayerAlive() {
+    return localPlayer && (typeof localPlayer.hp !== "number" || localPlayer.hp > 0);
+  }
+
+  function isPlayerAlive(p) {
+    return p && (typeof p.hp !== "number" || p.hp > 0);
+  }
+
+  function resetMatchState() {
+    matchPhase = "lobby";
+    phaseEndsAt = 0;
+    roomLocked = false;
+    winnerId = null;
+    nextGameVotes = new Set();
+    hasVotedNext = false;
+    if (slainFeedEl) {
+      slainFeedEl.innerHTML = "";
+      slainFeedEl.classList.add("hidden");
+    }
+    hideWinOverlay();
+    updateMatchUI();
+  }
+
+  function getMatchStatePayload() {
+    return {
+      phase: matchPhase,
+      phaseEndsAt,
+      roomLocked,
+      winnerId,
+      votes: Array.from(nextGameVotes),
+    };
+  }
+
+  function applyMatchState(ms) {
+    if (!ms) return;
+    matchPhase = ms.phase || "lobby";
+    phaseEndsAt = ms.phaseEndsAt || 0;
+    roomLocked = !!ms.roomLocked;
+    winnerId = ms.winnerId || null;
+    nextGameVotes = new Set(ms.votes || []);
+    if (localPlayer && nextGameVotes.has(localPlayer.id)) hasVotedNext = true;
+    updateMatchUI();
+    syncLoadoutToHostIfAllowed();
+  }
+
+  function syncLoadoutToHostIfAllowed() {
+    if (!localPlayer || !profile) return;
+    if (matchPhase !== "rolling" && matchPhase !== "fighting") return;
+    if (!isLocalPlayerAlive()) return;
+    if (profile.equipped && localPlayer.weapon !== profile.equipped) {
+      setEquipped(profile.equipped);
+    }
+    const tr = getEquippedTrait();
+    if (tr && localPlayer.trait !== tr) setEquippedTrait(tr);
+  }
+
+  function broadcastMatchState() {
+    if (mode !== "host") return;
+    broadcast({ type: "matchState", ...getMatchStatePayload() });
+    updateMatchUI();
+  }
+
+  function addSlainLine(text) {
+    if (!slainFeedEl) return;
+    slainFeedEl.classList.remove("hidden");
+    const line = document.createElement("div");
+    line.className = "slain-line";
+    line.textContent = text;
+    slainFeedEl.appendChild(line);
+    while (slainFeedEl.children.length > 6) {
+      slainFeedEl.removeChild(slainFeedEl.firstChild);
+    }
+  }
+
+  function showWinOverlay() {
+    const winner = winnerId ? players.get(winnerId) : null;
+    const name = winner ? winner.name : "Unknown";
+    winMessageEl.innerHTML = `<strong>${escapeHtml(name)}</strong> wins!`;
+    winOverlayEl.classList.remove("hidden");
+    winOverlayEl.setAttribute("aria-hidden", "false");
+    updateVoteStatusUI();
+  }
+
+  function hideWinOverlay() {
+    winOverlayEl.classList.add("hidden");
+    winOverlayEl.setAttribute("aria-hidden", "true");
+    if (voteStatusEl) voteStatusEl.textContent = "";
+  }
+
+  function updateVoteStatusUI() {
+    if (!voteStatusEl || matchPhase !== "ended") return;
+    const total = allPlayers().length;
+    const votes = nextGameVotes.size;
+    voteStatusEl.textContent = `Votes: ${votes} / ${total} (all must vote yes)`;
+    if (btnVoteNext) btnVoteNext.disabled = hasVotedNext;
+  }
+
+  function updateMatchUI() {
+    if (btnStartGame) {
+      const showStart = isP1() && matchPhase === "lobby" && isMultiplayerMatch();
+      btnStartGame.classList.toggle("hidden", !showStart);
+    }
+
+    if (matchPhase === "ended") {
+      showWinOverlay();
+    } else {
+      hideWinOverlay();
+    }
+
+    if (matchPhase === "lobby" && isMultiplayerMatch()) {
+      setGameStatus("Waiting for host to start…", "");
+    } else if (matchPhase === "rolling") {
+      const left = Math.max(0, Math.ceil((phaseEndsAt - now()) / 1000));
+      setGameStatus(`Rolling phase: ${left}s (roll only, no attacks)`, "");
+    } else if (matchPhase === "fighting") {
+      setGameStatus("Fight!", "success");
+    } else if (!isLocalPlayerAlive() && isMultiplayerMatch()) {
+      setGameStatus("You died — spectating", "error");
+    }
+
+    updateVoteStatusUI();
+  }
+
+  function canRoll() {
+    if (!isMultiplayerMatch()) return true;
+    if (!isLocalPlayerAlive()) return false;
+    return matchPhase === "rolling" || matchPhase === "fighting";
+  }
+
+  function canUseWeapons() {
+    if (!isMultiplayerMatch()) return true;
+    if (!isLocalPlayerAlive()) return false;
+    return matchPhase === "rolling" || matchPhase === "fighting";
+  }
+
+  function canAttackNow() {
+    if (!localPlayer) return false;
+    if (!isMultiplayerMatch()) return mode === "solo" || mode === "host" || mode === "guest";
+    if (!isLocalPlayerAlive()) return false;
+    return matchPhase === "fighting";
+  }
+
+  function countAlivePlayers() {
+    return allPlayers().filter((p) => isPlayerAlive(p)).length;
+  }
+
+  function hostStartGame() {
+    if (mode !== "host" || !isP1()) return;
+    matchPhase = "rolling";
+    roomLocked = true;
+    phaseEndsAt = now() + ROLLING_MS;
+    winnerId = null;
+    nextGameVotes = new Set();
+    hasVotedNext = false;
+    projectiles = [];
+    for (const p of allPlayers()) {
+      p.hp = MAX_HP;
+      broadcast({ type: "hp", id: p.id, hp: p.hp });
+    }
+    broadcastMatchState();
+    setGameStatus("Game started — 20s rolling phase", "success");
+  }
+
+  function hostTickMatchPhase() {
+    if (mode !== "host") return;
+    if (matchPhase === "rolling" && now() >= phaseEndsAt) {
+      matchPhase = "fighting";
+      phaseEndsAt = 0;
+      broadcastMatchState();
+    }
+  }
+
+  function hostCheckWinner() {
+    if (mode !== "host" || matchPhase !== "fighting") return;
+    if (countAlivePlayers() <= 1) {
+      const alive = allPlayers().find((p) => isPlayerAlive(p));
+      winnerId = alive ? alive.id : null;
+      matchPhase = "ended";
+      phaseEndsAt = 0;
+      nextGameVotes = new Set();
+      hasVotedNext = false;
+      broadcastMatchState();
+    }
+  }
+
+  function hostResetForNextGame() {
+    if (mode !== "host") return;
+    matchPhase = "rolling";
+    phaseEndsAt = now() + ROLLING_MS;
+    winnerId = null;
+    nextGameVotes = new Set();
+    hasVotedNext = false;
+    projectiles = [];
+    for (const p of allPlayers()) {
+      p.hp = MAX_HP;
+      p.x = 120 + p.slot * 40;
+      p.y = WORLD_H / 2;
+    }
+    broadcast({ type: "matchReset", players: allPlayers(), match: getMatchStatePayload() });
+    broadcastMatchState();
+    if (slainFeedEl) {
+      slainFeedEl.innerHTML = "";
+      slainFeedEl.classList.add("hidden");
+    }
+    hideWinOverlay();
+  }
+
+  function hostSlain(victimId, attackerId) {
+    const victim = players.get(victimId);
+    const killer = players.get(attackerId);
+    if (!victim || !killer) return;
+    const text = `${victim.name} Was slain by ${killer.name}`;
+    broadcast({ type: "slain", text });
+    addSlainLine(text);
+    hostCheckWinner();
   }
 
   function peerOptions(overrides) {
@@ -556,6 +822,7 @@
       peer = null;
     }
     myPeerId = null;
+    resetMatchState();
   }
 
   function allPlayers() {
@@ -582,12 +849,13 @@
     if (hostConn && hostConn.open) hostConn.send(msg);
   }
 
-  function applyState(list, selfId) {
+  function applyState(list, selfId, match) {
     players.clear();
     for (const p of list) {
       players.set(p.id, { dirX: 1, dirY: 0, weapon: null, hp: MAX_HP, trait: null, kills: 0, user: null, ...p });
       if (p.id === selfId) localPlayer = players.get(p.id);
     }
+    applyMatchState(match);
     updateP1Cursor();
   }
 
@@ -596,7 +864,22 @@
 
     switch (msg.type) {
       case "state":
-        applyState(msg.players, msg.youId);
+        applyState(msg.players, msg.youId, msg.match);
+        break;
+      case "matchState":
+        applyMatchState(msg);
+        break;
+      case "matchReset":
+        players.clear();
+        for (const p of msg.players || []) {
+          players.set(p.id, { dirX: 1, dirY: 0, weapon: null, hp: MAX_HP, trait: null, kills: 0, user: null, ...p });
+          if (localPlayer && p.id === localPlayer.id) localPlayer = players.get(p.id);
+        }
+        applyMatchState(msg.match);
+        projectiles = [];
+        break;
+      case "slain":
+        addSlainLine(msg.text);
         break;
       case "playerJoined":
         players.set(msg.player.id, { ...msg.player });
@@ -658,6 +941,11 @@
 
     conn.on("data", (data) => {
       if (data.type === "join") {
+        if (roomLocked) {
+          conn.send({ type: "error", message: "Game already started. You cannot join." });
+          conn.close();
+          return;
+        }
         const guestUser = (data.user || "").trim();
         if (guestUser && isAccountBanned(roomCode, guestUser)) {
           conn.send({ type: "error", message: "You are banned from this room." });
@@ -688,16 +976,27 @@
           type: "state",
           youId: player.id,
           players: allPlayers(),
+          match: getMatchStatePayload(),
         });
         broadcast({ type: "playerJoined", player }, conn);
       } else if (data.type === "equip") {
+        if (matchPhase !== "rolling" && matchPhase !== "fighting") return;
         const p = players.get(conn.peer);
-        if (p) {
-          p.weapon = data.weapon || null;
-          broadcast({ type: "equip", id: p.id, weapon: p.weapon }, conn);
-        }
+        if (!p || !isPlayerAlive(p)) return;
+        p.weapon = data.weapon || null;
+        broadcast({ type: "equip", id: p.id, weapon: p.weapon }, conn);
       } else if (data.type === "attack") {
+        if (matchPhase !== "fighting") return;
+        const p = players.get(conn.peer);
+        if (!p || !isPlayerAlive(p)) return;
         handleAttack(conn.peer, data);
+      } else if (data.type === "voteNext") {
+        if (matchPhase !== "ended") return;
+        nextGameVotes.add(conn.peer);
+        broadcastMatchState();
+        if (nextGameVotes.size >= allPlayers().length) {
+          hostResetForNextGame();
+        }
       } else if (data.type === "face") {
         const p = players.get(conn.peer);
         if (p) {
@@ -706,11 +1005,11 @@
           broadcast({ type: "face", id: p.id, dirX: p.dirX, dirY: p.dirY }, conn);
         }
       } else if (data.type === "trait") {
+        if (matchPhase !== "rolling" && matchPhase !== "fighting") return;
         const p = players.get(conn.peer);
-        if (p) {
-          p.trait = data.trait || null;
-          broadcast({ type: "trait", id: p.id, trait: p.trait }, conn);
-        }
+        if (!p || !isPlayerAlive(p)) return;
+        p.trait = data.trait || null;
+        broadcast({ type: "trait", id: p.id, trait: p.trait }, conn);
       } else if (data.type === "kills") {
         const p = players.get(conn.peer);
         if (p) {
@@ -748,6 +1047,7 @@
     localPlayer = null;
     mode = null;
     roomCode = null;
+    resetMatchState();
     setBusy(false);
   }
 
@@ -790,7 +1090,9 @@
 
   function drawPlayer(p, isLocal) {
     ctx.save();
-    ctx.globalAlpha = alphaForTrait(p.trait);
+    let a = alphaForTrait(p.trait);
+    if (isMultiplayerMatch() && !isPlayerAlive(p)) a *= DEAD_ALPHA;
+    ctx.globalAlpha = a;
     const half = PLAYER_SIZE / 2;
     ctx.fillStyle = p.color;
     ctx.fillRect(p.x - half, p.y - half, PLAYER_SIZE, PLAYER_SIZE);
@@ -883,6 +1185,7 @@
 
   function update() {
     if (!localPlayer) return;
+    if (isMultiplayerMatch() && !isLocalPlayerAlive()) return;
     let dx = 0;
     let dy = 0;
     const mult = movementMultiplierForTrait(getEquippedTrait());
@@ -962,7 +1265,10 @@
     const dt = Math.min(0.05, (ts - lastLoopTime) / 1000);
     lastLoopTime = ts;
 
-    if (mode === "solo" || mode === "host") {
+    if (mode === "host") hostTickMatchPhase();
+    if (isMultiplayerMatch()) updateMatchUI();
+
+    if ((mode === "solo" || mode === "host") && (!isMultiplayerMatch() || matchPhase === "fighting")) {
       stepProjectiles(dt);
       if (mode === "host" && guestConns.length > 0 && projectiles.length > 0) {
         projSyncAccum += dt;
@@ -1091,6 +1397,7 @@
       };
       players.clear();
       players.set(localPlayer.id, localPlayer);
+      resetMatchState();
 
       p.on("connection", onHostConnection);
       p.on("error", (err) => {
@@ -1176,11 +1483,23 @@
 
     showGame(`Room: ${code}`);
     setStatus("Joined!", "success");
-    // send equipped to host
-    if (profile?.equipped) sendToHost({ type: "equip", weapon: profile.equipped });
     const eqTrait = getEquippedTrait();
     if (eqTrait) sendToHost({ type: "trait", trait: eqTrait });
     if (typeof profile?.kills === "number") sendToHost({ type: "kills", kills: profile.kills });
+    syncLoadoutToHostIfAllowed();
+  }
+
+  function voteNextGame() {
+    if (matchPhase !== "ended" || hasVotedNext || !localPlayer) return;
+    hasVotedNext = true;
+    if (mode === "host") {
+      nextGameVotes.add(localPlayer.id);
+      broadcastMatchState();
+      if (nextGameVotes.size >= allPlayers().length) hostResetForNextGame();
+    } else if (mode === "guest") {
+      sendToHost({ type: "voteNext" });
+    }
+    updateVoteStatusUI();
   }
 
   function renderWeaponsModal() {
@@ -1190,8 +1509,9 @@
       const t = getEquippedTrait();
       const td = traitDefs();
       traitLabelEl.textContent = t ? (td[t]?.name || t) : "None";
+      if (btnRollWeapon) btnRollWeapon.disabled = !canRoll();
       if (btnRollTrait) {
-        btnRollTrait.disabled = !canRollTrait();
+        btnRollTrait.disabled = !canRoll() || !canRollTrait();
         btnRollTrait.textContent = hasInstantTraitUnlock()
           ? "Roll Trait"
           : "Roll Trait (5 kills)";
@@ -1202,6 +1522,10 @@
   }
 
   function openWeaponsModal() {
+    if (isMultiplayerMatch() && !isLocalPlayerAlive()) {
+      setGameStatus("You died — spectating only.", "error");
+      return;
+    }
     renderWeaponsModal();
     weaponsModalEl.classList.remove("hidden");
     weaponsModalEl.setAttribute("aria-hidden", "false");
@@ -1213,6 +1537,10 @@
   }
 
   function openSettingsModal() {
+    if (isMultiplayerMatch() && !isLocalPlayerAlive()) {
+      setGameStatus("You died — spectating only.", "error");
+      return;
+    }
     if (redeemStatusEl) {
       redeemStatusEl.textContent = "";
       redeemStatusEl.className = "status";
@@ -1306,6 +1634,15 @@
   }
 
   function rollWeapon() {
+    if (!canRoll()) {
+      setGameStatus(
+        isMultiplayerMatch()
+          ? "Roll only after the host starts (rolling or fighting phase)."
+          : "Cannot roll right now.",
+        "error"
+      );
+      return;
+    }
     if (rollAnimTimer) {
       clearInterval(rollAnimTimer);
       rollAnimTimer = null;
@@ -1336,6 +1673,10 @@
   }
 
   function rollTrait() {
+    if (!canRoll()) {
+      setGameStatus("Roll traits only after the host starts the game.", "error");
+      return;
+    }
     if (!canRollTrait()) {
       setGameStatus("Need 5 kills to roll a trait.", "error");
       return;
@@ -1350,7 +1691,7 @@
   }
 
   function canAttack() {
-    return localPlayer && (mode === "solo" || mode === "host" || mode === "guest");
+    return canAttackNow();
   }
 
   function getEquippedWeapon() {
@@ -1380,7 +1721,7 @@
   }
 
   function performAttack(payload) {
-    if (!localPlayer) return;
+    if (!localPlayer || !canAttackNow()) return;
     if (mode === "solo" || mode === "host") {
       handleAttack(localPlayer.id, payload);
     } else if (mode === "guest") {
@@ -1458,10 +1799,16 @@
   function applyDamage(targetId, dmg, attackerId) {
     const t = players.get(targetId);
     if (!t) return;
+    if (!isPlayerAlive(t)) return;
+    const wasAlive = t.hp > 0;
     t.hp = Math.max(0, (typeof t.hp === "number" ? t.hp : MAX_HP) - dmg);
     const msg = { type: "hp", id: targetId, hp: t.hp, attackerId };
     if (mode === "host") broadcast(msg);
     handleMessage(msg);
+
+    if (wasAlive && t.hp === 0 && attackerId && mode === "host") {
+      hostSlain(targetId, attackerId);
+    }
 
     // kill tracking (host/solo authoritative)
     if (t.hp === 0 && attackerId) {
@@ -1483,8 +1830,9 @@
 
   function handleAttack(attackerId, data) {
     if (mode !== "host" && mode !== "solo") return;
+    if (isMultiplayerMatch() && matchPhase !== "fighting") return;
     const attacker = players.get(attackerId);
-    if (!attacker || attacker.hp <= 0) return;
+    if (!attacker || !isPlayerAlive(attacker)) return;
     const weapon = data.weapon;
     if (!weapon) return;
 
@@ -1585,6 +1933,8 @@
   });
 
   btnLeave.addEventListener("click", showMenu);
+  if (btnStartGame) btnStartGame.addEventListener("click", hostStartGame);
+  if (btnVoteNext) btnVoteNext.addEventListener("click", voteNextGame);
   btnCopyUrl.addEventListener("click", () => copyText(shareUrlInput.value));
   btnWeapons.addEventListener("click", openWeaponsModal);
   btnSettings.addEventListener("click", openSettingsModal);
@@ -1724,8 +2074,13 @@
   });
 
   window.addEventListener("keydown", (e) => {
-    keys[e.key.toLowerCase()] = true;
-    if (e.key.toLowerCase() === "q") {
+    if (isTypingInField()) return;
+
+    const k = e.key.toLowerCase();
+    keys[k] = true;
+
+    if (isGameScreenActive() && k === "q") {
+      if (isMultiplayerMatch() && !isLocalPlayerAlive()) return;
       const trait = getEquippedTrait();
       if (trait === "dash" && localPlayer) {
         const t = now();
@@ -1743,17 +2098,25 @@
         }
       }
     }
+
     if (
-      ["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(
-        e.key.toLowerCase()
-      )
+      isGameScreenActive() &&
+      ["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)
     ) {
       e.preventDefault();
     }
   });
 
   window.addEventListener("keyup", (e) => {
+    if (isTypingInField()) return;
     keys[e.key.toLowerCase()] = false;
+  });
+
+  document.addEventListener("focusin", (e) => {
+    const t = e.target;
+    if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) {
+      clearMovementKeys();
+    }
   });
 
   const params = new URLSearchParams(window.location.search);

@@ -73,32 +73,36 @@
       <span id="roomLabel"></span>
       <span class="hint">WASD to move</span>
       <span id="gameStatus" class="game-status"></span>
+      <button type="button" id="btnStartGame" class="btn btn-small btn-start hidden">Start Game</button>
       <button type="button" id="btnWeapons" class="btn btn-small">Weapons</button>
       <button type="button" id="btnSettings" class="btn btn-small">Settings</button>
       <button type="button" id="btnCopyCode" class="btn btn-small hidden">Copy code</button>
       <button type="button" id="btnLeave" class="btn btn-small">Leave</button>
     </div>
     <p id="gameShareHint" class="game-share-hint hidden"></p>
+    <div id="slainFeed" class="slain-feed hidden" aria-live="polite"></div>
     <div class="canvas-wrap">
       <canvas id="canvas" width="800" height="500"></canvas>
     </div>
   </div>
 
   <div id="weaponsModal" class="modal hidden" aria-hidden="true">
-    <div class="modal-card">
+    <div class="modal-card modal-weapons">
       <h2>Weapons</h2>
-      <p class="help-text"><strong>Kills:</strong> <span id="killsLabel">0</span> · <strong>Trait:</strong> <span id="traitLabel">None</span></p>
+      <div class="modal-scroll">
+        <p class="help-text"><strong>Kills:</strong> <span id="killsLabel">0</span> · <strong>Trait:</strong> <span id="traitLabel">None</span></p>
 
-      <div class="weapons-actions">
-        <button type="button" id="btnRollWeapon" class="btn btn-accent">Roll Weapon</button>
-        <button type="button" id="btnRollTrait" class="btn btn-primary" disabled>Roll Trait (5 kills)</button>
+        <div class="weapons-actions">
+          <button type="button" id="btnRollWeapon" class="btn btn-accent">Roll Weapon</button>
+          <button type="button" id="btnRollTrait" class="btn btn-primary" disabled>Roll Trait (5 kills)</button>
+        </div>
+
+        <div class="divider">Weapons (Backpack)</div>
+        <div id="backpackList" class="backpack-list"></div>
+
+        <div class="divider">Traits</div>
+        <div id="traitList" class="backpack-list"></div>
       </div>
-
-      <div class="divider">Weapons (Backpack)</div>
-      <div id="backpackList" class="backpack-list"></div>
-
-      <div class="divider">Traits</div>
-      <div id="traitList" class="backpack-list"></div>
       <button type="button" id="btnCloseWeapons" class="btn btn-secondary">Close</button>
     </div>
   </div>
@@ -127,6 +131,15 @@
       <button type="button" id="btnKick" class="btn btn-kick">Kick player</button>
       <button type="button" id="btnBan" class="btn btn-kick">Ban account (perma)</button>
       <button type="button" id="btnClosePlayerMenu" class="btn btn-secondary">Cancel</button>
+    </div>
+  </div>
+
+  <div id="winOverlay" class="kicked-overlay hidden" aria-hidden="true">
+    <div class="kicked-card win-card">
+      <p id="winMessage"></p>
+      <p class="help-text">Vote to play the next game (everyone must vote yes).</p>
+      <p id="voteStatus" class="status"></p>
+      <button type="button" id="btnVoteNext" class="btn btn-accent">Play next game?</button>
     </div>
   </div>
 

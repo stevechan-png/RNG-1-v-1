@@ -8,11 +8,19 @@
   const IS_HTTPS = window.location.protocol === "https:";
   const MAX_HP = 100;
   const BOW_SPEED = 220;
+  const REINFORCED_BOW_SPEED = Math.round(BOW_SPEED * 1.3);
   const DAGGER_THROW_SPEED = 260;
+  const RPG_SPEED = 300;
   const BOW_LIFE_SEC = 3.5;
   const DAGGER_THROW_LIFE_SEC = 2;
+  const RPG_LIFE_SEC = 90;
   const TOS_SPEED = Math.round(BOW_SPEED * 1.3);
   const TOS_LIFE_SEC = 4;
+  const SCYTHE_RANGE = 55 * 1.5;
+  const LASER_DURATION_SEC = 1;
+  const LASER_TICK_SEC = 0.3;
+  const LASER_DMG = 5;
+  const LASER_BEAM_WIDTH = 18;
   const REDEEM_TOS_CODE = "ur3adthet3rm50fs3r1ve";
   const ROLLING_MS = 20000;
   const DEAD_ALPHA = 0.15;
@@ -88,6 +96,7 @@
   let menuTargetPlayer = null;
   let wasKicked = false;
   let projectiles = [];
+  let activeLasers = [];
   let lastLoopTime = 0;
   let projSyncAccum = 0;
   let attackCooldownUntil = 0;
@@ -183,6 +192,26 @@
         name: "Dagger",
         meta: "Short: melee • Long: throw • 7 dmg",
       },
+      rpg: {
+        id: "rpg",
+        name: "RPG",
+        meta: "Rocket • 25 dmg • infinite range • 2.0s cd • 1/35",
+      },
+      scythe: {
+        id: "scythe",
+        name: "Basic Scythe",
+        meta: "Melee • 10 dmg • 1.5× knife range • 0.3s cd • 1/55",
+      },
+      laser_launcher: {
+        id: "laser_launcher",
+        name: "Laser Launcher",
+        meta: "Cursor beam 1s • 5 dmg / 0.3s • 1/90",
+      },
+      reinforced_bow: {
+        id: "reinforced_bow",
+        name: "Reinforced Bow",
+        meta: "Arrow 1.3× speed • 10 dmg • 1.2s cd • 1/140",
+      },
       tos_rpg: {
         id: "tos_rpg",
         name: "Terms of Service Launcher",
@@ -192,12 +221,23 @@
   }
 
   function rollWeaponId() {
-    // Knife must be 1/2 exactly. Remaining half is split between Bow and Dagger.
-    // (Bow and Dagger keep their relative rarity vs each other: Bow 3x more common than Dagger.)
-    const r = Math.random();
-    if (r < 0.5) return "knife"; // 1/2
-    // remaining 1/2: Bow 3/4, Dagger 1/4  => Bow 3/8 overall, Dagger 1/8 overall
-    return Math.random() < 0.75 ? "bow" : "dagger";
+    if (Math.random() < 0.5) return "knife";
+    const pool = [
+      { id: "bow", w: 75 },
+      { id: "dagger", w: 25 },
+      { id: "rpg", w: 1 / 35 },
+      { id: "scythe", w: 1 / 55 },
+      { id: "laser_launcher", w: 1 / 90 },
+      { id: "reinforced_bow", w: 1 / 140 },
+    ];
+    let sum = 0;
+    for (const p of pool) sum += p.w;
+    let r = Math.random() * sum;
+    for (const p of pool) {
+      r -= p.w;
+      if (r <= 0) return p.id;
+    }
+    return "bow";
   }
 
   function loadAccounts() {
@@ -555,6 +595,7 @@
     nextGameVotes = new Set();
     hasVotedNext = false;
     projectiles = [];
+    activeLasers = [];
     for (const p of allPlayers()) {
       p.hp = MAX_HP;
       broadcast({ type: "hp", id: p.id, hp: p.hp });
@@ -593,6 +634,7 @@
     nextGameVotes = new Set();
     hasVotedNext = false;
     projectiles = [];
+    activeLasers = [];
     for (const p of allPlayers()) {
       p.hp = MAX_HP;
       p.x = 120 + p.slot * 40;
@@ -800,6 +842,7 @@
     hideKickedOverlay();
     wasKicked = false;
     projectiles = [];
+    activeLasers = [];
     lastLoopTime = 0;
     projSyncAccum = 0;
     peerToConn.clear();
@@ -877,6 +920,24 @@
         }
         applyMatchState(msg.match);
         projectiles = [];
+        activeLasers = [];
+        break;
+      case "laserStart":
+        activeLasers.push({ ...msg.beam });
+        break;
+      case "laserAim":
+        for (const L of activeLasers) {
+          if (L.owner === msg.owner) {
+            L.aimX = msg.aimX;
+            L.aimY = msg.aimY;
+          }
+        }
+        break;
+      case "laserEnd":
+        activeLasers = activeLasers.filter((L) => L.id !== msg.id);
+        break;
+      case "laserSync":
+        activeLasers = (msg.list || []).map((b) => ({ ...b }));
         break;
       case "slain":
         addSlainLine(msg.text);
@@ -990,6 +1051,20 @@
         const p = players.get(conn.peer);
         if (!p || !isPlayerAlive(p)) return;
         handleAttack(conn.peer, data);
+      } else if (data.type === "laserAim") {
+        if (matchPhase !== "fighting") return;
+        const p = players.get(conn.peer);
+        if (!p || !isPlayerAlive(p)) return;
+        for (const L of activeLasers) {
+          if (L.owner === conn.peer) {
+            L.aimX = clamp(data.aimX, 0, WORLD_W);
+            L.aimY = clamp(data.aimY, 0, WORLD_H);
+          }
+        }
+        broadcast(
+          { type: "laserAim", owner: conn.peer, aimX: data.aimX, aimY: data.aimY },
+          conn
+        );
       } else if (data.type === "voteNext") {
         if (matchPhase !== "ended") return;
         nextGameVotes.add(conn.peer);
@@ -1157,9 +1232,9 @@
         ctx.fillRect(0, -2, 16, 4);
         ctx.fillStyle = "#a67c52";
         ctx.fillRect(-6, -3, 6, 6);
-      } else if (w === "bow") {
-        ctx.strokeStyle = "#d1b36a";
-        ctx.lineWidth = 3;
+      } else if (w === "bow" || w === "reinforced_bow") {
+        ctx.strokeStyle = w === "reinforced_bow" ? "#f39c12" : "#d1b36a";
+        ctx.lineWidth = w === "reinforced_bow" ? 4 : 3;
         ctx.beginPath();
         ctx.arc(4, 0, 12, -1.1, 1.1);
         ctx.stroke();
@@ -1169,6 +1244,24 @@
         ctx.moveTo(-6, -10);
         ctx.lineTo(-6, 10);
         ctx.stroke();
+      } else if (w === "scythe") {
+        ctx.strokeStyle = "#95a5a6";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(6, 0, 16, 0.4, Math.PI * 1.35);
+        ctx.stroke();
+        ctx.fillStyle = "#7f8c8d";
+        ctx.fillRect(-4, -2, 10, 4);
+      } else if (w === "rpg" || w === "tos_rpg") {
+        ctx.fillStyle = w === "rpg" ? "#e67e22" : "#9b59b6";
+        ctx.fillRect(0, -5, 22, 10);
+        ctx.fillStyle = "#2c3e50";
+        ctx.fillRect(-8, -3, 8, 6);
+      } else if (w === "laser_launcher") {
+        ctx.fillStyle = "#3498db";
+        ctx.fillRect(-4, -6, 14, 12);
+        ctx.fillStyle = "#e74c3c";
+        ctx.fillRect(8, -2, 6, 4);
       }
       ctx.restore();
     }
@@ -1241,6 +1334,20 @@
       ctx.arc(0, 0, radius, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
+    } else if (pr.kind === "rpg_rocket") {
+      ctx.fillStyle = "#e67e22";
+      ctx.fillRect(-16, -5, 28, 10);
+      ctx.fillStyle = "#c0392b";
+      ctx.beginPath();
+      ctx.moveTo(14, 0);
+      ctx.lineTo(4, -7);
+      ctx.lineTo(4, 7);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "rgba(255,200,0,0.7)";
+      ctx.beginPath();
+      ctx.arc(-14, 0, 5, 0, Math.PI * 2);
+      ctx.fill();
     } else {
       ctx.fillStyle = pr.color || "#fff";
       ctx.beginPath();
@@ -1258,6 +1365,35 @@
     }
     if (localPlayer) drawPlayer(localPlayer, true);
     for (const pr of projectiles) drawProjectile(pr);
+    drawActiveLasers();
+  }
+
+  function drawActiveLasers() {
+    for (const L of activeLasers) {
+      const owner = players.get(L.owner);
+      if (!owner || !isPlayerAlive(owner)) continue;
+      const x1 = owner.x;
+      const y1 = owner.y;
+      const x2 = typeof L.aimX === "number" ? L.aimX : x1 + 80;
+      const y2 = typeof L.aimY === "number" ? L.aimY : y1;
+      ctx.save();
+      ctx.strokeStyle = "rgba(52, 152, 219, 0.85)";
+      ctx.lineWidth = LASER_BEAM_WIDTH;
+      ctx.lineCap = "round";
+      ctx.shadowColor = "#3498db";
+      ctx.shadowBlur = 12;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   function loop(ts) {
@@ -1268,13 +1404,16 @@
     if (mode === "host") hostTickMatchPhase();
     if (isMultiplayerMatch()) updateMatchUI();
 
+    updateLocalLaserAim();
     if ((mode === "solo" || mode === "host") && (!isMultiplayerMatch() || matchPhase === "fighting")) {
       stepProjectiles(dt);
-      if (mode === "host" && guestConns.length > 0 && projectiles.length > 0) {
+      stepLasers(dt);
+      if (mode === "host" && guestConns.length > 0) {
         projSyncAccum += dt;
-        if (projSyncAccum >= 0.05) {
+        if (projSyncAccum >= 0.05 && (projectiles.length > 0 || activeLasers.length > 0)) {
           projSyncAccum = 0;
-          broadcastProjTick();
+          if (projectiles.length > 0) broadcastProjTick();
+          if (activeLasers.length > 0) broadcastLaserSync();
         }
       }
     }
@@ -1648,7 +1787,15 @@
       rollAnimTimer = null;
     }
     const defs = weaponDefs();
-    const order = ["knife", "bow", "dagger"];
+    const order = [
+      "knife",
+      "bow",
+      "dagger",
+      "rpg",
+      "scythe",
+      "laser_launcher",
+      "reinforced_bow",
+    ];
     const start = now();
     rollAnimUntil = start + 950;
     setGameStatus("Rolling…", "");
@@ -1700,22 +1847,30 @@
 
   function weaponCooldownMs(weaponId, isThrow) {
     if (weaponId === "knife") return 500;
+    if (weaponId === "scythe") return 300;
     if (weaponId === "bow") return 1000;
+    if (weaponId === "reinforced_bow") return 1200;
     if (weaponId === "dagger") return isThrow ? 1200 : 700;
+    if (weaponId === "rpg") return 2000;
+    if (weaponId === "laser_launcher") return 1500;
     if (weaponId === "tos_rpg") return 2000;
     return 600;
   }
 
   function meleeRange(weaponId) {
     if (weaponId === "knife") return 55;
+    if (weaponId === "scythe") return SCYTHE_RANGE;
     if (weaponId === "dagger") return 50;
     return 0;
   }
 
   function damageOf(weaponId) {
     if (weaponId === "knife") return 10;
+    if (weaponId === "scythe") return 10;
     if (weaponId === "bow") return 8;
+    if (weaponId === "reinforced_bow") return 10;
     if (weaponId === "dagger") return 7;
+    if (weaponId === "rpg") return 25;
     if (weaponId === "tos_rpg") return 35;
     return 0;
   }
@@ -1762,6 +1917,154 @@
     if (mode === "host") broadcast({ type: "projRemove", pid });
   }
 
+  function distPointToSegment(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq < 1e-6) return Math.hypot(px - x1, py - y1);
+    let t = ((px - x1) * dx + (py - y1) * dy) / lenSq;
+    t = clamp(t, 0, 1);
+    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+  }
+
+  function broadcastLaserSync() {
+    if (mode !== "host") return;
+    broadcast({
+      type: "laserSync",
+      list: activeLasers.map((L) => ({
+        id: L.id,
+        owner: L.owner,
+        aimX: L.aimX,
+        aimY: L.aimY,
+        remaining: L.remaining,
+      })),
+    });
+  }
+
+  function removeLaser(id) {
+    activeLasers = activeLasers.filter((L) => L.id !== id);
+    if (mode === "host") broadcast({ type: "laserEnd", id });
+  }
+
+  function startLaserBeam(ownerId, aimX, aimY) {
+    const owner = players.get(ownerId);
+    if (!owner) return;
+    if (activeLasers.some((L) => L.owner === ownerId)) return;
+    const beam = {
+      id: `laser-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      owner: ownerId,
+      aimX: clamp(aimX, 0, WORLD_W),
+      aimY: clamp(aimY, 0, WORLD_H),
+      remaining: LASER_DURATION_SEC,
+      tickAcc: 0,
+      dmg: LASER_DMG,
+      tickInterval: LASER_TICK_SEC,
+    };
+    activeLasers.push(beam);
+    if (mode === "host") broadcast({ type: "laserStart", beam });
+  }
+
+  function updateLocalLaserAim() {
+    if (!localPlayer || !isLocalPlayerAlive()) return;
+    let hasMine = false;
+    for (const L of activeLasers) {
+      if (L.owner !== localPlayer.id) continue;
+      hasMine = true;
+      L.aimX = lastAim.x;
+      L.aimY = lastAim.y;
+    }
+    if (!hasMine) return;
+    if (mode === "host") broadcast({ type: "laserAim", owner: localPlayer.id, aimX: lastAim.x, aimY: lastAim.y });
+    else if (mode === "guest") sendToHost({ type: "laserAim", aimX: lastAim.x, aimY: lastAim.y });
+  }
+
+  function damagePlayersInBeam(ownerId, x1, y1, x2, y2, dmg) {
+    const hitExtra = PLAYER_SIZE / 2 + LASER_BEAM_WIDTH / 2;
+    for (const p of allPlayers()) {
+      if (p.id === ownerId) continue;
+      if (!isPlayerAlive(p)) continue;
+      if (distPointToSegment(p.x, p.y, x1, y1, x2, y2) <= hitExtra) {
+        applyDamage(p.id, dmg, ownerId);
+      }
+    }
+  }
+
+  function stepLasers(dt) {
+    if (mode !== "host" && mode !== "solo") return;
+    const toRemove = [];
+    for (const L of activeLasers) {
+      const owner = players.get(L.owner);
+      if (!owner || !isPlayerAlive(owner)) {
+        toRemove.push(L.id);
+        continue;
+      }
+      L.remaining -= dt;
+      L.tickAcc = (L.tickAcc || 0) + dt;
+      while (L.tickAcc >= L.tickInterval) {
+        L.tickAcc -= L.tickInterval;
+        damagePlayersInBeam(L.owner, owner.x, owner.y, L.aimX, L.aimY, L.dmg);
+      }
+      if (L.remaining <= 0) toRemove.push(L.id);
+    }
+    for (const id of toRemove) removeLaser(id);
+  }
+
+  function spawnDirectedProjectile(attackerId, weapon, ax, ay, ux, uy, dmg) {
+    const speed =
+      weapon === "bow"
+        ? BOW_SPEED
+        : weapon === "reinforced_bow"
+          ? REINFORCED_BOW_SPEED
+          : weapon === "rpg"
+            ? RPG_SPEED
+            : weapon === "tos_rpg"
+              ? TOS_SPEED
+              : DAGGER_THROW_SPEED;
+    const ang = Math.atan2(uy, ux);
+    const half = PLAYER_SIZE / 2;
+    const spawnDist = half + 22;
+    const pid = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const infinite = weapon === "rpg";
+    spawnProjectile({
+      pid,
+      owner: attackerId,
+      x: ax + ux * spawnDist,
+      y: ay + uy * spawnDist,
+      vx: ux * speed,
+      vy: uy * speed,
+      r: weapon === "tos_rpg" ? 14 : weapon === "rpg" ? 10 : weapon === "bow" || weapon === "reinforced_bow" ? 8 : 7,
+      life:
+        weapon === "tos_rpg"
+          ? TOS_LIFE_SEC
+          : weapon === "rpg"
+            ? RPG_LIFE_SEC
+            : weapon === "bow" || weapon === "reinforced_bow"
+              ? BOW_LIFE_SEC
+              : DAGGER_THROW_LIFE_SEC,
+      dmg,
+      color:
+        weapon === "tos_rpg"
+          ? "#9b59b6"
+          : weapon === "rpg"
+            ? "#e67e22"
+            : weapon === "reinforced_bow"
+              ? "#ffe4a8"
+              : weapon === "bow"
+                ? "#fff8e7"
+                : "#d1b36a",
+      kind:
+        weapon === "tos_rpg"
+          ? "tos_circle"
+          : weapon === "rpg"
+            ? "rpg_rocket"
+            : weapon === "bow" || weapon === "reinforced_bow"
+              ? "arrow"
+              : "dagger",
+      ang,
+      infinite,
+    });
+  }
+
   function stepProjectiles(dt) {
     if (mode !== "host" && mode !== "solo") return;
     if (projectiles.length === 0) return;
@@ -1775,19 +2078,23 @@
         toRemove.push(pr.pid);
         continue;
       }
-      if (pr.x < -30 || pr.x > WORLD_W + 30 || pr.y < -30 || pr.y > WORLD_H + 30) {
-        toRemove.push(pr.pid);
-        continue;
+      if (!pr.infinite) {
+        if (pr.x < -30 || pr.x > WORLD_W + 30 || pr.y < -30 || pr.y > WORLD_H + 30) {
+          toRemove.push(pr.pid);
+          continue;
+        }
       }
       for (const p of allPlayers()) {
         if (p.id === pr.owner) continue;
-        if (typeof p.hp !== "number" || p.hp <= 0) continue;
+        if (!isPlayerAlive(p)) continue;
         const half = PLAYER_SIZE / 2;
-        const hitR = pr.kind === "arrow" ? 10 : pr.r || 8;
+        const hitR =
+          pr.kind === "arrow" ? 10 : pr.kind === "rpg_rocket" ? pr.r || 10 : pr.r || 8;
         const dx = clamp(pr.x, p.x - half, p.x + half) - pr.x;
         const dy = clamp(pr.y, p.y - half, p.y + half) - pr.y;
         if (dx * dx + dy * dy <= hitR * hitR) {
-          applyDamage(p.id, pr.dmg, pr.owner);
+          const shooter = pr.owner;
+          applyDamage(p.id, pr.dmg, shooter);
           toRemove.push(pr.pid);
           break;
         }
@@ -1806,11 +2113,10 @@
     if (mode === "host") broadcast(msg);
     handleMessage(msg);
 
-    if (wasAlive && t.hp === 0 && attackerId && mode === "host") {
-      hostSlain(targetId, attackerId);
+    if (wasAlive && t.hp === 0 && attackerId && (mode === "host" || mode === "solo")) {
+      if (mode === "host") hostSlain(targetId, attackerId);
     }
 
-    // kill tracking (host/solo authoritative)
     if (t.hp === 0 && attackerId) {
       const a = players.get(attackerId);
       if (a) {
@@ -1850,34 +2156,19 @@
     }
     const dmg = damageOf(weapon);
 
-    if (weapon === "bow" || weapon === "tos_rpg" || (weapon === "dagger" && data.throw === true)) {
-      const ux = fdx / fl;
-      const uy = fdy / fl;
-      const speed =
-        weapon === "bow" ? BOW_SPEED : weapon === "tos_rpg" ? TOS_SPEED : DAGGER_THROW_SPEED;
-      const ang = Math.atan2(uy, ux);
-      const half = PLAYER_SIZE / 2;
-      const spawnDist = half + 22;
-      const pid = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      spawnProjectile({
-        pid,
-        owner: attackerId,
-        x: ax + ux * spawnDist,
-        y: ay + uy * spawnDist,
-        vx: ux * speed,
-        vy: uy * speed,
-        r: weapon === "tos_rpg" ? 14 : weapon === "bow" ? 8 : 7,
-        life:
-          weapon === "tos_rpg"
-            ? TOS_LIFE_SEC
-            : weapon === "bow"
-              ? BOW_LIFE_SEC
-              : DAGGER_THROW_LIFE_SEC,
-        dmg,
-        color: weapon === "tos_rpg" ? "#9b59b6" : weapon === "bow" ? "#fff8e7" : "#d1b36a",
-        kind: weapon === "tos_rpg" ? "tos_circle" : weapon === "bow" ? "arrow" : "dagger",
-        ang,
-      });
+    if (weapon === "laser_launcher") {
+      startLaserBeam(attackerId, aimX, aimY);
+      return;
+    }
+
+    const isProjectile =
+      weapon === "bow" ||
+      weapon === "reinforced_bow" ||
+      weapon === "rpg" ||
+      weapon === "tos_rpg" ||
+      (weapon === "dagger" && data.throw === true);
+    if (isProjectile) {
+      spawnDirectedProjectile(attackerId, weapon, ax, ay, fdx / fl, fdy / fl, dmg);
       return;
     }
 
@@ -2009,6 +2300,11 @@
       suppressNextAttack = true;
       openPlayerMenu(target);
     }
+  });
+
+  canvas.addEventListener("mousemove", (e) => {
+    if (!isGameScreenActive()) return;
+    lastAim = getCanvasCoords(e.clientX, e.clientY);
   });
 
   // Combat: aim at click (mousedown/up for dagger long-throw)

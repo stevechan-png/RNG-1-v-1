@@ -659,20 +659,82 @@
     hostCheckWinner();
   }
 
+  const PEER_HOSTS = [
+    { host: "0.peerjs.com", port: 443, secure: true },
+    { host: "0.peerjs.com", port: 443, secure: true },
+    { host: "0.peerjs.com", port: 443, secure: true },
+  ];
+
   function peerOptions(overrides) {
     const base = {
-      // Make PeerJS explicit for GitHub Pages / HTTPS
+      key: "peerjs",
       host: "0.peerjs.com",
       port: IS_HTTPS ? 443 : 80,
       path: "/",
       secure: IS_HTTPS,
-      // Improve NAT traversal odds
       config: {
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+        ],
       },
       debug: 0,
     };
     return { ...base, ...(overrides || {}) };
+  }
+
+  function on(el, type, fn) {
+    if (el) el.addEventListener(type, fn);
+  }
+
+  async function openPeerInstance(peerId, hostIndex) {
+    const hostCfg = PEER_HOSTS[hostIndex] || PEER_HOSTS[0];
+    const opts = peerOptions({
+      host: hostCfg.host,
+      port: hostCfg.port,
+      secure: hostCfg.secure,
+    });
+    const p = peerId ? new Peer(peerId, opts) : new Peer(opts);
+    await waitForPeerOpen(p, 28000);
+    return p;
+  }
+
+  async function connectPeer(peerId) {
+    if (typeof Peer === "undefined") {
+      throw new Error(
+        "Multiplayer library did not load. Refresh the page or check if a blocker stopped PeerJS."
+      );
+    }
+    let lastErr = null;
+    for (let i = 0; i < PEER_HOSTS.length; i++) {
+      let p = null;
+      try {
+        p = await openPeerInstance(peerId, i);
+        return p;
+      } catch (e) {
+        lastErr = e;
+        if (p) {
+          try {
+            p.destroy();
+          } catch (_) {}
+        }
+        await new Promise((r) => setTimeout(r, 600));
+      }
+    }
+    throw (
+      lastErr ||
+      new Error("Could not reach the PeerJS server. Try again in a minute or use Solo mode.")
+    );
+  }
+
+  function initMultiplayerAvailability() {
+    if (typeof Peer !== "undefined") return;
+    setStatus(
+      "PeerJS failed to load — Solo still works. Disable ad blockers or refresh; multiplayer needs the PeerJS script.",
+      "error"
+    );
+    if (btnCreate) btnCreate.disabled = true;
+    if (btnJoin) btnJoin.disabled = true;
   }
 
   function roomPeerId(code) {
@@ -1512,10 +1574,9 @@
       throw new Error("Could not create a room. Try again.");
     }
     const code = generateCode();
-    const p = new Peer(roomPeerId(code), peerOptions());
+    const p = await connectPeer(roomPeerId(code));
 
     try {
-      await waitForPeerOpen(p, 15000);
       peer = p;
       myPeerId = p.id;
       roomCode = code;
@@ -1573,9 +1634,8 @@
     mode = "guest";
     roomCode = code;
 
-    const p = new Peer(peerOptions());
+    const p = await connectPeer();
     peer = p;
-    await waitForPeerOpen(p, 15000);
     myPeerId = p.id;
 
     const conn = p.connect(roomPeerId(code), { reliable: true });
@@ -2187,12 +2247,19 @@
     if (best) applyDamage(best.id, dmg, attackerId);
   }
 
-  btnSolo.addEventListener("click", () => {
+  if (!canvas || !btnSolo || !btnCreate || !btnJoin || !statusEl) {
+    if (statusEl) {
+      setStatus("Game UI failed to load. Make sure index.html and game.js are both up to date on GitHub.", "error");
+    }
+    return;
+  }
+
+  on(btnSolo, "click", () => {
     setStatus("");
     startSolo();
   });
 
-  btnCreate.addEventListener("click", async () => {
+  on(btnCreate, "click", async () => {
     setStatus("Creating room…");
     setBusy(true);
     try {
@@ -2205,7 +2272,7 @@
     setBusy(false);
   });
 
-  btnJoin.addEventListener("click", async () => {
+  on(btnJoin, "click", async () => {
     const code = joinCodeInput.value.trim().replace(/\D/g, "").slice(0, 6);
     if (code.length < 6) {
       setStatus("Enter the full 6-digit code.", "error");
@@ -2223,50 +2290,50 @@
     setBusy(false);
   });
 
-  btnLeave.addEventListener("click", showMenu);
-  if (btnStartGame) btnStartGame.addEventListener("click", hostStartGame);
-  if (btnVoteNext) btnVoteNext.addEventListener("click", voteNextGame);
-  btnCopyUrl.addEventListener("click", () => copyText(shareUrlInput.value));
-  btnWeapons.addEventListener("click", openWeaponsModal);
-  btnSettings.addEventListener("click", openSettingsModal);
-  btnCloseWeapons.addEventListener("click", closeWeaponsModal);
-  weaponsModalEl.addEventListener("click", (e) => {
+  on(btnLeave, "click", showMenu);
+  on(btnStartGame, "click", hostStartGame);
+  on(btnVoteNext, "click", voteNextGame);
+  on(btnCopyUrl, "click", () => copyText(shareUrlInput.value));
+  on(btnWeapons, "click", openWeaponsModal);
+  on(btnSettings, "click", openSettingsModal);
+  on(btnCloseWeapons, "click", closeWeaponsModal);
+  on(weaponsModalEl, "click", (e) => {
     if (e.target === weaponsModalEl) closeWeaponsModal();
   });
-  btnRollWeapon.addEventListener("click", () => {
+  on(btnRollWeapon, "click", () => {
     if (!profile) profile = getDefaultProfile();
     rollWeapon();
     renderWeaponsModal();
   });
-  btnRollTrait.addEventListener("click", () => {
+  on(btnRollTrait, "click", () => {
     if (!profile) profile = getDefaultProfile();
     rollTrait();
   });
-  btnRedeem.addEventListener("click", redeemCode);
-  btnCloseSettings.addEventListener("click", closeSettingsModal);
-  settingsModalEl.addEventListener("click", (e) => {
+  on(btnRedeem, "click", redeemCode);
+  on(btnCloseSettings, "click", closeSettingsModal);
+  on(settingsModalEl, "click", (e) => {
     if (e.target === settingsModalEl) closeSettingsModal();
   });
-  backpackListEl.addEventListener("click", (e) => {
+  on(backpackListEl, "click", (e) => {
     const t = e.target;
     if (!(t instanceof HTMLElement)) return;
     const id = t.getAttribute("data-equip");
     if (id) setEquipped(id);
   });
 
-  traitListEl.addEventListener("click", (e) => {
+  on(traitListEl, "click", (e) => {
     const t = e.target;
     if (!(t instanceof HTMLElement)) return;
     const id = t.getAttribute("data-equip-trait");
     if (id) setEquippedTrait(id);
   });
 
-  btnKick.addEventListener("click", () => {
+  on(btnKick, "click", () => {
     if (!menuTargetPlayer) return;
     kickPlayer(menuTargetPlayer.id, kickReasonInput.value);
   });
 
-  btnBan.addEventListener("click", () => {
+  on(btnBan, "click", () => {
     if (!menuTargetPlayer) return;
     const user = menuTargetPlayer.user;
     if (!user) {
@@ -2278,13 +2345,13 @@
     setGameStatus(`Banned ${user} from this room`, "success");
   });
 
-  btnClosePlayerMenu.addEventListener("click", closePlayerMenu);
+  on(btnClosePlayerMenu, "click", closePlayerMenu);
 
-  playerMenuEl.addEventListener("click", (e) => {
+  on(playerMenuEl, "click", (e) => {
     if (e.target === playerMenuEl) closePlayerMenu();
   });
 
-  btnKickedOk.addEventListener("click", () => {
+  on(btnKickedOk, "click", () => {
     hideKickedOverlay();
     showMenu();
   });
@@ -2430,7 +2497,8 @@
     setCurrentUser(null);
   }
 
-  btnAccCreate.addEventListener("click", async () => {
+  on(btnAccCreate, "click", async () => {
+    if (!accUserEl || !accPassEl) return;
     const u = normalizeUser(accUserEl.value);
     const p = accPassEl.value || "";
     if (!u || p.length < 3) {
@@ -2449,7 +2517,8 @@
     setStatus("Account created (saved on this device).", "success");
   });
 
-  btnAccLogin.addEventListener("click", async () => {
+  on(btnAccLogin, "click", async () => {
+    if (!accUserEl || !accPassEl) return;
     const u = normalizeUser(accUserEl.value);
     const p = accPassEl.value || "";
     const accounts = loadAccounts();
@@ -2466,10 +2535,11 @@
     setStatus("Logged in.", "success");
   });
 
-  btnAccLogout.addEventListener("click", () => {
+  on(btnAccLogout, "click", () => {
     setCurrentUser(null);
     setStatus("Logged out.", "success");
   });
 
-  playerNameInput.focus();
+  initMultiplayerAvailability();
+  if (playerNameInput) playerNameInput.focus();
 })();

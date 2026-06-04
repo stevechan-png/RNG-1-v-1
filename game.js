@@ -73,6 +73,13 @@
   const winMessageEl = document.getElementById("winMessage");
   const voteStatusEl = document.getElementById("voteStatus");
   const btnVoteNext = document.getElementById("btnVoteNext");
+  const rollOverlayEl = document.getElementById("rollOverlay");
+  const rollCardInnerEl = document.getElementById("rollCardInner");
+  const rollCardLabelEl = document.getElementById("rollCardLabel");
+  const rollFrontNameEl = document.getElementById("rollFrontName");
+  const rollFrontMetaEl = document.getElementById("rollFrontMeta");
+  const rollRevealTextEl = document.getElementById("rollRevealText");
+  const btnRollDone = document.getElementById("btnRollDone");
   const accountLoggedOutEl = document.getElementById("accountLoggedOut");
   const accountLoggedInEl = document.getElementById("accountLoggedIn");
   const accUserEl = document.getElementById("accUser");
@@ -103,7 +110,6 @@
   let clickDownAt = 0;
   let lastAim = { x: WORLD_W / 2, y: WORLD_H / 2 };
   let rollAnimTimer = null;
-  let rollAnimUntil = 0;
   let adminHoldTimer = null;
   let suppressNextAttack = false;
   let dashCooldownUntil = 0;
@@ -180,17 +186,17 @@
       knife: {
         id: "knife",
         name: "Knife",
-        meta: "Close range • 10 dmg • 0.5s cd",
+        meta: "Close range • 10 dmg • 0.5s cd • 1/2",
       },
       bow: {
         id: "bow",
         name: "Bow",
-        meta: "Arrow • 8 dmg • 1.0s cd",
+        meta: "Arrow • 8 dmg • 1.0s cd • ~1/3",
       },
       dagger: {
         id: "dagger",
         name: "Dagger",
-        meta: "Short: melee • Long: throw • 7 dmg",
+        meta: "Short: melee • Long: throw • 7 dmg • ~1/9",
       },
       rpg: {
         id: "rpg",
@@ -221,23 +227,23 @@
   }
 
   function rollWeaponId() {
-    if (Math.random() < 0.5) return "knife";
-    const pool = [
-      { id: "bow", w: 75 },
-      { id: "dagger", w: 25 },
-      { id: "rpg", w: 1 / 35 },
-      { id: "scythe", w: 1 / 55 },
-      { id: "laser_launcher", w: 1 / 90 },
-      { id: "reinforced_bow", w: 1 / 140 },
+    // One roll, global odds exactly as listed on each weapon; leftover chance is bow:dagger 3:1.
+    const r = Math.random();
+    let cut = 0;
+    const tiers = [
+      ["knife", 1 / 2],
+      ["rpg", 1 / 35],
+      ["scythe", 1 / 55],
+      ["laser_launcher", 1 / 90],
+      ["reinforced_bow", 1 / 140],
     ];
-    let sum = 0;
-    for (const p of pool) sum += p.w;
-    let r = Math.random() * sum;
-    for (const p of pool) {
-      r -= p.w;
-      if (r <= 0) return p.id;
+    for (const [id, chance] of tiers) {
+      cut += chance;
+      if (r < cut) return id;
     }
-    return "bow";
+    const rest = 1 - cut;
+    const inRest = (r - cut) / rest;
+    return inRest < 0.75 ? "bow" : "dagger";
   }
 
   function loadAccounts() {
@@ -1832,6 +1838,98 @@
       .join("");
   }
 
+  function weaponRollTheme(id) {
+    const themes = {
+      knife: { a: "#5d6d7e", b: "#2c3e50", border: "#bdc3c7", glow: "rgba(189, 195, 199, 0.8)" },
+      bow: { a: "#6e4b2a", b: "#3d2817", border: "#d4a574", glow: "rgba(212, 165, 116, 0.85)" },
+      dagger: { a: "#5c4a32", b: "#2e2418", border: "#c9b28a", glow: "rgba(201, 178, 138, 0.85)" },
+      rpg: { a: "#a04000", b: "#5c2e00", border: "#e67e22", glow: "rgba(230, 126, 34, 0.9)" },
+      scythe: { a: "#566573", b: "#1c2833", border: "#95a5a6", glow: "rgba(149, 165, 166, 0.85)" },
+      laser_launcher: { a: "#1a5276", b: "#0b2f44", border: "#3498db", glow: "rgba(52, 152, 219, 0.9)" },
+      reinforced_bow: { a: "#7d6608", b: "#423306", border: "#f39c12", glow: "rgba(243, 156, 18, 0.9)" },
+      tos_rpg: { a: "#6c3483", b: "#2e1a36", border: "#9b59b6", glow: "rgba(155, 89, 182, 0.9)" },
+    };
+    return themes[id] || themes.knife;
+  }
+
+  function stopRollAnimation() {
+    if (rollAnimTimer) {
+      clearInterval(rollAnimTimer);
+      rollAnimTimer = null;
+    }
+    if (btnRollWeapon) btnRollWeapon.disabled = false;
+  }
+
+  function hideRollOverlay() {
+    stopRollAnimation();
+    if (!rollOverlayEl) return;
+    rollOverlayEl.classList.add("hidden");
+    rollOverlayEl.setAttribute("aria-hidden", "true");
+    if (rollCardInnerEl) {
+      rollCardInnerEl.classList.remove("is-shuffling", "is-revealed");
+    }
+    if (rollRevealTextEl) rollRevealTextEl.classList.remove("is-visible");
+    if (btnRollDone) btnRollDone.classList.add("hidden");
+    if (btnRollWeapon) btnRollWeapon.disabled = !canRoll();
+  }
+
+  function showRollOverlay() {
+    if (!rollOverlayEl || !rollCardInnerEl) return;
+    stopRollAnimation();
+    if (rollRevealTextEl) {
+      rollRevealTextEl.textContent = "";
+      rollRevealTextEl.classList.remove("is-visible");
+    }
+    if (rollCardLabelEl) rollCardLabelEl.textContent = "Rolling…";
+    if (rollFrontNameEl) rollFrontNameEl.textContent = "—";
+    if (rollFrontMetaEl) rollFrontMetaEl.textContent = "";
+    if (btnRollDone) btnRollDone.classList.add("hidden");
+    rollCardInnerEl.classList.remove("is-revealed");
+    rollCardInnerEl.classList.add("is-shuffling");
+    const scene = rollOverlayEl.querySelector(".roll-card-scene");
+    if (scene) {
+      scene.classList.remove("roll-pop-in");
+      void scene.offsetWidth;
+      scene.classList.add("roll-pop-in");
+    }
+    rollOverlayEl.classList.remove("hidden");
+    rollOverlayEl.setAttribute("aria-hidden", "false");
+    if (btnRollWeapon) btnRollWeapon.disabled = true;
+  }
+
+  function setRollShufflePreview(name) {
+    if (rollFrontNameEl) rollFrontNameEl.textContent = name;
+  }
+
+  function applyRollCardTheme(id) {
+    if (!rollCardInnerEl) return;
+    const t = weaponRollTheme(id);
+    rollCardInnerEl.style.setProperty("--roll-front-a", t.a);
+    rollCardInnerEl.style.setProperty("--roll-front-b", t.b);
+    rollCardInnerEl.style.setProperty("--roll-border", t.border);
+    rollCardInnerEl.style.setProperty("--roll-glow", t.glow);
+  }
+
+  function revealRollCard(finalId) {
+    const defs = weaponDefs();
+    const d = defs[finalId] || { name: finalId, meta: "" };
+    applyRollCardTheme(finalId);
+    if (rollCardLabelEl) rollCardLabelEl.textContent = "You got";
+    if (rollFrontNameEl) rollFrontNameEl.textContent = d.name;
+    if (rollFrontMetaEl) rollFrontMetaEl.textContent = d.meta || "";
+    if (rollCardInnerEl) {
+      rollCardInnerEl.classList.remove("is-shuffling");
+      void rollCardInnerEl.offsetWidth;
+      rollCardInnerEl.classList.add("is-revealed");
+    }
+    if (rollRevealTextEl) {
+      rollRevealTextEl.textContent = `You got ${d.name}!`;
+      rollRevealTextEl.classList.add("is-visible");
+    }
+    if (btnRollDone) btnRollDone.classList.remove("hidden");
+    setGameStatus(`Rolled: ${d.name}`, "success");
+  }
+
   function rollWeapon() {
     if (!canRoll()) {
       setGameStatus(
@@ -1842,10 +1940,17 @@
       );
       return;
     }
-    if (rollAnimTimer) {
-      clearInterval(rollAnimTimer);
-      rollAnimTimer = null;
+    if (!rollOverlayEl || !rollCardInnerEl) {
+      const finalId = rollWeaponId();
+      ensureWeaponInInventory(finalId);
+      if (!profile.equipped) profile.equipped = finalId;
+      if (currentUser) saveProfileFor(currentUser, profile);
+      setEquipped(profile.equipped);
+      setGameStatus(`Rolled: ${weaponDefs()[finalId].name}`, "success");
+      return;
     }
+    if (rollAnimTimer) return;
+
     const defs = weaponDefs();
     const order = [
       "knife",
@@ -1856,27 +1961,31 @@
       "laser_launcher",
       "reinforced_bow",
     ];
-    const start = now();
-    rollAnimUntil = start + 950;
+    const shuffleMs = 2000;
+    const shuffleEnd = now() + shuffleMs;
+
+    showRollOverlay();
     setGameStatus("Rolling…", "");
+
     let i = 0;
     rollAnimTimer = setInterval(() => {
-      const t = now();
       const id = order[i % order.length];
       i++;
-      setGameStatus(`Rolling… ${defs[id].name}`, "");
-      if (t >= rollAnimUntil) {
+      setRollShufflePreview(defs[id].name);
+
+      if (now() >= shuffleEnd) {
         clearInterval(rollAnimTimer);
         rollAnimTimer = null;
         const finalId = rollWeaponId();
+        revealRollCard(finalId);
         ensureWeaponInInventory(finalId);
         if (!profile.equipped) profile.equipped = finalId;
         if (currentUser) saveProfileFor(currentUser, profile);
         setEquipped(profile.equipped);
-        setGameStatus(`Rolled: ${defs[finalId].name}`, "success");
+        renderWeaponsModal();
         showShareBox(roomCode || "");
       }
-    }, 90);
+    }, 75);
   }
 
   function rollTrait() {
@@ -2305,6 +2414,7 @@
     rollWeapon();
     renderWeaponsModal();
   });
+  on(btnRollDone, "click", hideRollOverlay);
   on(btnRollTrait, "click", () => {
     if (!profile) profile = getDefaultProfile();
     rollTrait();

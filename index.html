@@ -143,6 +143,21 @@
     </div>
   </div>
 
+  <div id="rollOverlay" class="roll-overlay hidden" aria-hidden="true">
+    <div class="roll-overlay-vignette"></div>
+    <div class="roll-card-scene roll-pop-in">
+      <div id="rollCardInner" class="roll-card-inner is-shuffling">
+        <div class="roll-card-face">
+          <p id="rollCardLabel" class="roll-card-label">Rolling…</p>
+          <h3 id="rollFrontName" class="roll-front-name">—</h3>
+          <p id="rollFrontMeta" class="roll-front-meta"></p>
+        </div>
+      </div>
+    </div>
+    <p id="rollRevealText" class="roll-reveal-text"></p>
+    <button type="button" id="btnRollDone" class="btn btn-accent roll-done-btn hidden">Continue</button>
+  </div>
+
   <div id="kickedOverlay" class="kicked-overlay hidden" aria-hidden="true">
     <div class="kicked-card">
       <p id="kickedMessage"></p>

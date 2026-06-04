@@ -477,3 +477,193 @@ body {
   color: #e74c3c;
   font-weight: 700;
 }
+
+/* Weapon roll — big card pop + reveal (stays until dismissed) */
+.roll-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  padding: 1.5rem;
+  pointer-events: auto;
+}
+
+.roll-overlay.hidden {
+  display: none;
+}
+
+.roll-overlay-vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.88) 70%);
+  animation: rollVignetteIn 0.35s ease-out;
+}
+
+@keyframes rollVignetteIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.roll-card-scene {
+  position: relative;
+  z-index: 1;
+  width: min(300px, 88vw);
+  height: min(420px, 62vh);
+}
+
+.roll-pop-in {
+  animation: rollPopIn 0.55s cubic-bezier(0.34, 1.45, 0.64, 1) forwards;
+}
+
+@keyframes rollPopIn {
+  0% {
+    transform: scale(0.15) translateY(40px);
+    opacity: 0;
+    filter: blur(6px);
+  }
+  55% {
+    transform: scale(1.14) translateY(-8px);
+    opacity: 1;
+    filter: blur(0);
+  }
+  75% {
+    transform: scale(0.97) translateY(2px);
+  }
+  100% {
+    transform: scale(1) translateY(0);
+    opacity: 1;
+  }
+}
+
+.roll-card-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  will-change: transform;
+}
+
+.roll-card-inner.is-shuffling {
+  animation: rollShuffle 0.2s ease-in-out infinite;
+}
+
+.roll-card-inner.is-revealed {
+  animation: rollRevealPop 0.5s cubic-bezier(0.34, 1.35, 0.64, 1) forwards;
+  filter: drop-shadow(0 0 32px var(--roll-glow, rgba(241, 196, 15, 0.75)));
+}
+
+@keyframes rollShuffle {
+  0%,
+  100% {
+    transform: scale(1) translateY(0);
+  }
+  50% {
+    transform: scale(1.06) translateY(-6px);
+  }
+}
+
+@keyframes rollRevealPop {
+  0% {
+    transform: scale(1.05);
+  }
+  45% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.roll-card-face {
+  width: 100%;
+  height: 100%;
+  border-radius: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 1.5rem 1.25rem;
+  background: linear-gradient(160deg, var(--roll-front-a, #34495e) 0%, var(--roll-front-b, #1a252f) 100%);
+  border: 3px solid var(--roll-border, #f1c40f);
+  box-shadow:
+    0 24px 60px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.roll-card-inner.is-shuffling .roll-front-name {
+  animation: rollNamePulse 0.12s ease-out;
+}
+
+@keyframes rollNamePulse {
+  from {
+    transform: scale(0.9);
+    opacity: 0.55;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.roll-card-label {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: rgba(255, 255, 255, 0.65);
+  margin-bottom: 0.75rem;
+}
+
+.roll-front-name {
+  font-size: clamp(1.75rem, 6vw, 2.35rem);
+  font-weight: 800;
+  line-height: 1.15;
+  color: #fff;
+  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.45);
+  margin-bottom: 0.85rem;
+}
+
+.roll-front-meta {
+  font-size: 0.95rem;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.82);
+  max-width: 92%;
+}
+
+.roll-reveal-text {
+  position: relative;
+  z-index: 1;
+  font-size: clamp(1.25rem, 4.5vw, 1.65rem);
+  font-weight: 800;
+  color: #f1c40f;
+  text-align: center;
+  text-shadow: 0 2px 16px rgba(0, 0, 0, 0.6);
+  opacity: 0;
+  transform: translateY(12px) scale(0.9);
+  transition:
+    opacity 0.4s ease,
+    transform 0.45s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+.roll-reveal-text.is-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.roll-done-btn {
+  position: relative;
+  z-index: 1;
+  width: min(280px, 88vw);
+  margin-bottom: 0;
+}
+
+.roll-done-btn.hidden {
+  display: none;
+}

@@ -24,6 +24,7 @@
   const REDEEM_TOS_CODE = "ur3adthet3rm50fs3r1ve";
   const ROLLING_MS = 20000;
   const DEAD_ALPHA = 0.15;
+  const TELEPORT_COOLDOWN_MS = 20000;
 
   const menuEl = document.getElementById("menu");
   const gameEl = document.getElementById("game");
@@ -87,6 +88,9 @@
   const btnAccLogin = document.getElementById("btnAccLogin");
   const btnAccCreate = document.getElementById("btnAccCreate");
   const btnAccLogout = document.getElementById("btnAccLogout");
+  const btnAccTest = document.getElementById("btnAccTest");
+  const btnAccExitTest = document.getElementById("btnAccExitTest");
+  const testModeBannerEl = document.getElementById("testModeBanner");
   const accWhoEl = document.getElementById("accWho");
 
   let keys = {};
@@ -110,9 +114,12 @@
   let clickDownAt = 0;
   let lastAim = { x: WORLD_W / 2, y: WORLD_H / 2 };
   let rollAnimTimer = null;
+
   let adminHoldTimer = null;
+  let adminHoldPos = null;
   let suppressNextAttack = false;
   let dashCooldownUntil = 0;
+  let teleportCooldownUntil = 0;
   let matchPhase = "lobby";
   let phaseEndsAt = 0;
   let roomLocked = false;
@@ -123,12 +130,55 @@
   // local account persistence (per device)
   const LS_ACCOUNTS = "bg_accounts_v1";
   const LS_CURRENT = "bg_current_user_v1";
-  const LS_ROOM_BANS = "bg_room_bans_v1";
+  const LS_ROOM_BANS = "bg_room_bans_v1"; // host-side only
   let currentUser = null;
   let profile = null; // { inventory: string[], equipped: string|null, kills:number, trait:string|null }
+  let testMode = false;
+  let profileSnapshot = null;
 
   function getPlayerName() {
     return (playerNameInput.value || "Player").trim().slice(0, 20) || "Player";
+  }
+
+  function openSettingsModal() {
+    if (isMultiplayerMatch() && !isLocalPlayerAlive()) {
+      setGameStatus("You died — spectating only.", "error");
+      return;
+    }
+    if (redeemStatusEl) {
+      redeemStatusEl.textContent = "";
+      redeemStatusEl.className = "status";
+    }
+    if (redeemCodeEl) redeemCodeEl.value = "";
+    settingsModalEl.classList.remove("hidden");
+    settingsModalEl.setAttribute("aria-hidden", "false");
+    if (redeemCodeEl) redeemCodeEl.focus();
+  }
+
+  function closeSettingsModal() {
+    settingsModalEl.classList.add("hidden");
+    settingsModalEl.setAttribute("aria-hidden", "true");
+  }
+
+  function setRedeemStatus(msg, type) {
+    if (!redeemStatusEl) return;
+    redeemStatusEl.textContent = msg || "";
+    redeemStatusEl.className = "status" + (type ? " " + type : "");
+  }
+
+  function redeemCode() {
+    const code = (redeemCodeEl?.value || "").trim();
+    if (code !== REDEEM_TOS_CODE) {
+      setRedeemStatus("Invalid code.", "error");
+      return;
+    }
+    if (!profile) profile = getDefaultProfile();
+    ensureWeaponInInventory("tos_rpg");
+    persistProfile();
+    setEquipped("tos_rpg");
+    setRedeemStatus("Unlocked: Terms of Service Launcher", "success");
+    setGameStatus("Unlocked: Terms of Service Launcher", "success");
+    renderWeaponsModal();
   }
 
   function setStatus(msg, type) {
@@ -143,10 +193,22 @@
       type === "success" ? "#2ecc71" : type === "error" ? "#e74c3c" : "#f39c12";
   }
 
+  function setGameStatus(msg, type) {
+    if (!gameStatusEl) return;
+    gameStatusEl.textContent = msg || "";
+    gameStatusEl.style.color =
+      type === "success" ? "#2ecc71" : type === "error" ? "#e74c3c" : "#f39c12";
+  }
+
+  function refreshMultiplayerButtons(busy) {
+    const blockMp = testMode;
+    if (btnJoin) btnJoin.disabled = busy || blockMp;
+    if (btnCreate) btnCreate.disabled = busy || blockMp;
+  }
+
   function setBusy(busy) {
     btnSolo.disabled = busy;
-    btnJoin.disabled = busy;
-    btnCreate.disabled = busy;
+    refreshMultiplayerButtons(busy);
     btnWeapons.disabled = busy;
   }
 
@@ -216,7 +278,7 @@
       reinforced_bow: {
         id: "reinforced_bow",
         name: "Reinforced Bow",
-        meta: "Arrow 1.3× speed • 10 dmg • 1.2s cd • 1/140",
+        meta: "Arrow 1.3× speed • 20 dmg • 1.0s cd • 1/140",
       },
       tos_rpg: {
         id: "tos_rpg",
@@ -269,14 +331,75 @@
     return (u || "").trim().slice(0, 20);
   }
 
+  function isV4v5v6User() {
+    const account = normalizeUser(currentUser).toLowerCase();
+    const player = getPlayerName().toLowerCase();
+    return account === "v4v5v6" || player === "v4v5v6";
+  }
+
   function hasInstantTraitUnlock() {
-    return normalizeUser(currentUser).toLowerCase() === "v4v5v6";
+    return testMode || isV4v5v6User();
+  }
+
+  function cloneProfile(prof) {
+    return migrateProfile(JSON.parse(JSON.stringify(prof || getDefaultProfile())));
+  }
+
+  function buildTestProfile() {
+    return migrateProfile({
+      inventory: Object.keys(weaponDefs()),
+      equipped: null,
+      kills: 999,
+      trait: null,
+      traitInventory: Object.keys(traitDefs()),
+      equippedTrait: null,
+    });
+  }
+
+  function persistProfile() {
+    if (testMode || !currentUser || !profile) return;
+    saveProfileFor(currentUser, profile);
+  }
+
+  function enterTestMode() {
+    if (!currentUser) {
+      setStatus("Log in first, then click Test Account.", "error");
+      return;
+    }
+    if (testMode) return;
+    profileSnapshot = cloneProfile(profile);
+    testMode = true;
+    profile = buildTestProfile();
+    renderAccountUI();
+    renderWeaponsModal();
+    refreshMultiplayerButtons(false);
+    setStatus("Test mode on — all weapons & traits unlocked. Solo only; nothing saves.", "success");
+  }
+
+  function exitTestMode() {
+    if (!testMode) return;
+    testMode = false;
+    profile = profileSnapshot
+      ? cloneProfile(profileSnapshot)
+      : currentUser
+        ? loadProfileFor(currentUser)
+        : getDefaultProfile();
+    profileSnapshot = null;
+    renderAccountUI();
+    renderWeaponsModal();
+    refreshMultiplayerButtons(false);
+    setStatus("Test mode off — your real account progress is restored.", "success");
+  }
+
+  function getKillCount() {
+    const fromPlayer = localPlayer && typeof localPlayer.kills === "number" ? localPlayer.kills : 0;
+    const fromProfile = profile && typeof profile.kills === "number" ? profile.kills : 0;
+    return Math.max(fromPlayer, fromProfile);
   }
 
   function canRollTrait() {
     if (hasInstantTraitUnlock()) return true;
-    const kills = typeof profile?.kills === "number" ? profile.kills : 0;
-    return kills >= 5;
+    return getKillCount() >= 5;
   }
 
   function getDefaultProfile() {
@@ -315,12 +438,17 @@
   }
 
   function setCurrentUser(user) {
+    if (testMode) {
+      testMode = false;
+      profileSnapshot = null;
+    }
     currentUser = user || null;
     if (currentUser) localStorage.setItem(LS_CURRENT, currentUser);
     else localStorage.removeItem(LS_CURRENT);
     profile = migrateProfile(currentUser ? loadProfileFor(currentUser) : getDefaultProfile());
     renderAccountUI();
     renderWeaponsModal();
+    refreshMultiplayerButtons(false);
   }
 
   function renderAccountUI() {
@@ -328,11 +456,17 @@
     if (currentUser) {
       accountLoggedOutEl.classList.add("hidden");
       accountLoggedInEl.classList.remove("hidden");
-      accWhoEl.textContent = currentUser;
+      accWhoEl.textContent = currentUser + (testMode ? " (test)" : "");
+      if (testModeBannerEl) testModeBannerEl.classList.toggle("hidden", !testMode);
+      if (btnAccTest) btnAccTest.classList.toggle("hidden", testMode);
+      if (btnAccExitTest) btnAccExitTest.classList.toggle("hidden", !testMode);
     } else {
       accountLoggedOutEl.classList.remove("hidden");
       accountLoggedInEl.classList.add("hidden");
       accWhoEl.textContent = "";
+      if (testModeBannerEl) testModeBannerEl.classList.add("hidden");
+      if (btnAccTest) btnAccTest.classList.remove("hidden");
+      if (btnAccExitTest) btnAccExitTest.classList.add("hidden");
     }
   }
 
@@ -348,7 +482,7 @@
     }
     if (!profile) profile = getDefaultProfile();
     profile.equipped = id;
-    if (currentUser) saveProfileFor(currentUser, profile);
+    persistProfile();
     if (localPlayer) {
       localPlayer.weapon = id;
       if (mode === "host") {
@@ -393,6 +527,11 @@
       dash: { id: "dash", name: "Dash", meta: "Press Q to dash a short distance" },
       speedy: { id: "speedy", name: "Speedy", meta: "1.2× movement speed" },
       transparency: { id: "transparency", name: "Transparency", meta: "20% less visible" },
+      teleport_jump: {
+        id: "teleport_jump",
+        name: "Teleport Jump",
+        meta: "Right-click to teleport • 20s cd • 1/50",
+      },
     };
   }
 
@@ -413,7 +552,7 @@
     if (!profile) profile = getDefaultProfile();
     profile.equippedTrait = id;
     profile.trait = id;
-    if (currentUser) saveProfileFor(currentUser, profile);
+    persistProfile();
     if (localPlayer) {
       localPlayer.trait = id;
       if (mode === "host") {
@@ -426,8 +565,7 @@
   }
 
   function rollTraitId() {
-    // Dash 1/2, Speedy 1/9, Transparency 1/35
-    // Normalized weights: 315 : 70 : 18
+    if (Math.random() < 1 / 50) return "teleport_jump";
     const r = Math.random() * (315 + 70 + 18);
     if (r < 315) return "dash";
     if (r < 315 + 70) return "speedy";
@@ -1028,6 +1166,12 @@
       case "kills":
         if (players.has(msg.id)) players.get(msg.id).kills = msg.kills;
         break;
+      case "trait":
+        if (players.has(msg.id)) players.get(msg.id).trait = msg.trait;
+        break;
+      case "kills":
+        if (players.has(msg.id)) players.get(msg.id).kills = msg.kills;
+        break;
       case "face":
         if (players.has(msg.id)) {
           const p = players.get(msg.id);
@@ -1096,9 +1240,9 @@
           color: PLAYER_COLORS[slot],
           hp: MAX_HP,
           weapon: null,
-          user: guestUser || null,
-          trait: data.trait || null,
+          trait: (data.trait || null),
           kills: typeof data.kills === "number" ? data.kills : 0,
+          user: guestUser || null,
         };
         players.set(player.id, player);
         conn.send({
@@ -1119,6 +1263,17 @@
         const p = players.get(conn.peer);
         if (!p || !isPlayerAlive(p)) return;
         handleAttack(conn.peer, data);
+      } else if (data.type === "teleport") {
+        if (matchPhase !== "rolling" && matchPhase !== "fighting") return;
+        const p = players.get(conn.peer);
+        if (!p || !isPlayerAlive(p) || p.trait !== "teleport_jump") return;
+        const t = now();
+        if (typeof p.teleportCdUntil === "number" && t < p.teleportCdUntil) return;
+        p.teleportCdUntil = t + TELEPORT_COOLDOWN_MS;
+        const half = PLAYER_SIZE / 2;
+        p.x = clamp(data.x, half, WORLD_W - half);
+        p.y = clamp(data.y, half, WORLD_H - half);
+        broadcast({ type: "move", id: p.id, x: p.x, y: p.y }, conn);
       } else if (data.type === "laserAim") {
         if (matchPhase !== "fighting") return;
         const p = players.get(conn.peer);
@@ -1153,6 +1308,18 @@
         if (!p || !isPlayerAlive(p)) return;
         p.trait = data.trait || null;
         broadcast({ type: "trait", id: p.id, trait: p.trait }, conn);
+      } else if (data.type === "kills") {
+        const p = players.get(conn.peer);
+        if (p) {
+          p.kills = typeof data.kills === "number" ? data.kills : p.kills;
+          broadcast({ type: "kills", id: p.id, kills: p.kills }, conn);
+        }
+      } else if (data.type === "trait") {
+        const p = players.get(conn.peer);
+        if (p) {
+          p.trait = data.trait || null;
+          broadcast({ type: "trait", id: p.id, trait: p.trait }, conn);
+        }
       } else if (data.type === "kills") {
         const p = players.get(conn.peer);
         if (p) {
@@ -1233,9 +1400,9 @@
 
   function drawPlayer(p, isLocal) {
     ctx.save();
-    let a = alphaForTrait(p.trait);
-    if (isMultiplayerMatch() && !isPlayerAlive(p)) a *= DEAD_ALPHA;
-    ctx.globalAlpha = a;
+    let alpha = alphaForTrait(p.trait);
+    if (!isPlayerAlive(p)) alpha = DEAD_ALPHA;
+    ctx.globalAlpha = alpha;
     const half = PLAYER_SIZE / 2;
     ctx.fillStyle = p.color;
     ctx.fillRect(p.x - half, p.y - half, PLAYER_SIZE, PLAYER_SIZE);
@@ -1344,6 +1511,40 @@
     else sendToHost(msg);
   }
 
+  function tryTeleportJump(tx, ty) {
+    if (!localPlayer || getEquippedTrait() !== "teleport_jump") return false;
+    if (isMultiplayerMatch() && !isLocalPlayerAlive()) return false;
+    if (
+      isMultiplayerMatch() &&
+      matchPhase !== "rolling" &&
+      matchPhase !== "fighting"
+    ) {
+      setGameStatus("Teleport only during rolling or fighting.", "error");
+      return false;
+    }
+    const t = now();
+    if (t < teleportCooldownUntil) {
+      const left = Math.ceil((teleportCooldownUntil - t) / 1000);
+      setGameStatus(`Teleport cooldown: ${left}s`, "error");
+      return false;
+    }
+    const half = PLAYER_SIZE / 2;
+    const nx = clamp(tx, half, WORLD_W - half);
+    const ny = clamp(ty, half, WORLD_H - half);
+    teleportCooldownUntil = t + TELEPORT_COOLDOWN_MS;
+    localPlayer.teleportCdUntil = teleportCooldownUntil;
+
+    localPlayer.x = nx;
+    localPlayer.y = ny;
+    if (mode === "guest") {
+      sendToHost({ type: "teleport", x: nx, y: ny });
+    } else {
+      sendMove(nx, ny);
+    }
+    setGameStatus("Teleport!", "success");
+    return true;
+  }
+
   function update() {
     if (!localPlayer) return;
     if (isMultiplayerMatch() && !isLocalPlayerAlive()) return;
@@ -1364,128 +1565,52 @@
     sendMove(nx, ny);
   }
 
-  function drawProjectile(pr) {
-    const ang = typeof pr.ang === "number" ? pr.ang : Math.atan2(pr.vy, pr.vx);
-    ctx.save();
-    ctx.translate(pr.x, pr.y);
-    ctx.rotate(ang);
-    if (pr.kind === "arrow") {
-      ctx.fillStyle = "#fff8e7";
-      ctx.strokeStyle = "#1a1a1a";
-      ctx.lineWidth = 1.5;
-      ctx.fillRect(-22, -3.5, 36, 7);
-      ctx.strokeRect(-22, -3.5, 36, 7);
-      ctx.fillStyle = "#c0392b";
-      ctx.beginPath();
-      ctx.moveTo(16, 0);
-      ctx.lineTo(5, -9);
-      ctx.lineTo(5, 9);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = "#8b5a2b";
-      ctx.fillRect(-26, -2, 8, 4);
-    } else if (pr.kind === "dagger") {
-      ctx.fillStyle = "#c8b28a";
-      ctx.strokeStyle = "#333";
-      ctx.lineWidth = 1;
-      ctx.fillRect(-14, -4, 26, 8);
-      ctx.strokeRect(-14, -4, 26, 8);
-      ctx.fillStyle = "#a67c52";
-      ctx.fillRect(-20, -5, 7, 10);
-    } else if (pr.kind === "tos_circle") {
-      const radius = pr.r || 14;
-      ctx.fillStyle = "rgba(155, 89, 182, 0.25)";
-      ctx.strokeStyle = "#9b59b6";
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.arc(0, 0, radius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-    } else if (pr.kind === "rpg_rocket") {
-      ctx.fillStyle = "#e67e22";
-      ctx.fillRect(-16, -5, 28, 10);
-      ctx.fillStyle = "#c0392b";
-      ctx.beginPath();
-      ctx.moveTo(14, 0);
-      ctx.lineTo(4, -7);
-      ctx.lineTo(4, 7);
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillStyle = "rgba(255,200,0,0.7)";
-      ctx.beginPath();
-      ctx.arc(-14, 0, 5, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      ctx.fillStyle = pr.color || "#fff";
-      ctx.beginPath();
-      ctx.arc(0, 0, pr.r || 7, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.restore();
-  }
-
   function render() {
     drawLandscape();
+    // projectiles
+    for (const pr of projectiles) {
+      if (pr.kind === "arrow") {
+        const ang = typeof pr.ang === "number" ? pr.ang : Math.atan2(pr.vy, pr.vx);
+        ctx.save();
+        ctx.translate(pr.x, pr.y);
+        ctx.rotate(ang);
+        // arrow shaft
+        ctx.fillStyle = "#f5f5f5";
+        ctx.fillRect(-14, -2, 22, 4);
+        // arrow head
+        ctx.fillStyle = "#eaeaea";
+        ctx.beginPath();
+        ctx.moveTo(8, 0);
+        ctx.lineTo(2, -6);
+        ctx.lineTo(2, 6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      } else if (pr.kind === "dagger") {
+        const ang = typeof pr.ang === "number" ? pr.ang : Math.atan2(pr.vy, pr.vx);
+        ctx.save();
+        ctx.translate(pr.x, pr.y);
+        ctx.rotate(ang);
+        ctx.fillStyle = "#c8b28a";
+        ctx.fillRect(-10, -3, 18, 6);
+        ctx.fillStyle = "#a67c52";
+        ctx.fillRect(-14, -4, 5, 8);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = pr.color || "#fff";
+        ctx.beginPath();
+        ctx.arc(pr.x, pr.y, pr.r || 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
     const sorted = allPlayers().sort((a, b) => a.slot - b.slot);
     for (const p of sorted) {
       if (p.id !== localPlayer?.id) drawPlayer(p, false);
     }
     if (localPlayer) drawPlayer(localPlayer, true);
-    for (const pr of projectiles) drawProjectile(pr);
-    drawActiveLasers();
   }
 
-  function drawActiveLasers() {
-    for (const L of activeLasers) {
-      const owner = players.get(L.owner);
-      if (!owner || !isPlayerAlive(owner)) continue;
-      const x1 = owner.x;
-      const y1 = owner.y;
-      const x2 = typeof L.aimX === "number" ? L.aimX : x1 + 80;
-      const y2 = typeof L.aimY === "number" ? L.aimY : y1;
-      ctx.save();
-      ctx.strokeStyle = "rgba(52, 152, 219, 0.85)";
-      ctx.lineWidth = LASER_BEAM_WIDTH;
-      ctx.lineCap = "round";
-      ctx.shadowColor = "#3498db";
-      ctx.shadowBlur = 12;
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
-      ctx.restore();
-    }
-  }
-
-  function loop(ts) {
-    if (!lastLoopTime) lastLoopTime = ts;
-    const dt = Math.min(0.05, (ts - lastLoopTime) / 1000);
-    lastLoopTime = ts;
-
-    if (mode === "host") hostTickMatchPhase();
-    if (isMultiplayerMatch()) updateMatchUI();
-
-    updateLocalLaserAim();
-    if ((mode === "solo" || mode === "host") && (!isMultiplayerMatch() || matchPhase === "fighting")) {
-      stepProjectiles(dt);
-      stepLasers(dt);
-      if (mode === "host" && guestConns.length > 0) {
-        projSyncAccum += dt;
-        if (projSyncAccum >= 0.05 && (projectiles.length > 0 || activeLasers.length > 0)) {
-          projSyncAccum = 0;
-          if (projectiles.length > 0) broadcastProjTick();
-          if (activeLasers.length > 0) broadcastLaserSync();
-        }
-      }
-    }
-
+  function loop() {
     update();
     render();
     animId = requestAnimationFrame(loop);
@@ -1509,7 +1634,7 @@
     };
     players.clear();
     players.set(localPlayer.id, localPlayer);
-    showGame("Solo Test");
+    showGame(testMode ? "Solo — Test Mode (unsaved)" : "Solo Test");
     setStatus("");
   }
 
@@ -1576,6 +1701,9 @@
   }
 
   async function createRoom(attempt) {
+    if (testMode) {
+      throw new Error("Test mode is solo only. Exit test mode to create a room.");
+    }
     if (attempt > 8) {
       throw new Error("Could not create a room. Try again.");
     }
@@ -1597,7 +1725,7 @@
         color: PLAYER_COLORS[0],
         hp: MAX_HP,
         weapon: profile?.equipped || null,
-        trait: getEquippedTrait(),
+        trait: profile?.trait || null,
         kills: profile?.kills || 0,
         user: currentUser || null,
       };
@@ -1636,6 +1764,9 @@
   }
 
   async function joinRoom(code) {
+    if (testMode) {
+      throw new Error("Test mode is solo only. Exit test mode to join a room.");
+    }
     destroyPeer();
     mode = "guest";
     roomCode = code;
@@ -1671,8 +1802,8 @@
       type: "join",
       name: getPlayerName(),
       user: currentUser || null,
-      trait: getEquippedTrait(),
-      kills: typeof profile?.kills === "number" ? profile.kills : 0,
+      trait: profile?.trait || null,
+      kills: profile?.kills || 0,
     });
 
     await new Promise((resolve, reject) => {
@@ -1707,30 +1838,12 @@
     updateVoteStatusUI();
   }
 
-  function renderWeaponsModal() {
-    if (killsLabelEl && traitLabelEl) {
-      const kills = typeof profile?.kills === "number" ? profile.kills : 0;
-      killsLabelEl.textContent = String(kills);
-      const t = getEquippedTrait();
-      const td = traitDefs();
-      traitLabelEl.textContent = t ? (td[t]?.name || t) : "None";
-      if (btnRollWeapon) btnRollWeapon.disabled = !canRoll();
-      if (btnRollTrait) {
-        btnRollTrait.disabled = !canRoll() || !canRollTrait();
-        btnRollTrait.textContent = hasInstantTraitUnlock()
-          ? "Roll Trait"
-          : "Roll Trait (5 kills)";
-      }
-    }
-    renderBackpack();
-    renderTraitList();
-  }
-
   function openWeaponsModal() {
     if (isMultiplayerMatch() && !isLocalPlayerAlive()) {
       setGameStatus("You died — spectating only.", "error");
       return;
     }
+    if (!profile) profile = getDefaultProfile();
     renderWeaponsModal();
     weaponsModalEl.classList.remove("hidden");
     weaponsModalEl.setAttribute("aria-hidden", "false");
@@ -1742,10 +1855,6 @@
   }
 
   function openSettingsModal() {
-    if (isMultiplayerMatch() && !isLocalPlayerAlive()) {
-      setGameStatus("You died — spectating only.", "error");
-      return;
-    }
     if (redeemStatusEl) {
       redeemStatusEl.textContent = "";
       redeemStatusEl.className = "status";
@@ -1775,7 +1884,7 @@
     }
     if (!profile) profile = getDefaultProfile();
     ensureWeaponInInventory("tos_rpg");
-    if (currentUser) saveProfileFor(currentUser, profile);
+    persistProfile();
     setEquipped("tos_rpg");
     setRedeemStatus("Unlocked: Terms of Service Launcher", "success");
     setGameStatus("Unlocked: Terms of Service Launcher", "success");
@@ -1809,17 +1918,38 @@
       .join("");
   }
 
+  function renderWeaponsModal() {
+    if (!profile) profile = getDefaultProfile();
+    const kills = getKillCount();
+    const t = getEquippedTrait();
+    const tdefs = traitDefs();
+    if (killsLabelEl) killsLabelEl.textContent = String(kills);
+    if (traitLabelEl) traitLabelEl.textContent = t ? (tdefs[t]?.name || t) : "None";
+    if (btnRollWeapon) btnRollWeapon.disabled = !canRoll();
+    if (btnRollTrait) {
+      btnRollTrait.disabled = !canRoll() || !canRollTrait();
+      btnRollTrait.textContent = testMode
+        ? "Roll Trait (test)"
+        : hasInstantTraitUnlock()
+          ? "Roll Trait (unlocked)"
+          : "Roll Trait (5 kills)";
+    }
+    if (btnRollWeapon && testMode) btnRollWeapon.textContent = "Roll Weapon (test)";
+    else if (btnRollWeapon) btnRollWeapon.textContent = "Roll Weapon";
+    renderBackpack();
+    renderTraitList();
+  }
+
   function renderTraitList() {
     if (!traitListEl) return;
+    if (!profile) profile = getDefaultProfile();
+    const inv = profile.traitInventory || [];
+    const equipped = getEquippedTrait();
     const defs = traitDefs();
-    const inv = profile?.traitInventory || [];
     if (inv.length === 0) {
-      traitListEl.innerHTML = hasInstantTraitUnlock()
-        ? `<p class="help-text">No traits yet. Click <strong>Roll Trait</strong>.</p>`
-        : `<p class="help-text">No traits yet. Get 5 kills, then <strong>Roll Trait</strong>.</p>`;
+      traitListEl.innerHTML = `<p class="help-text">No traits yet. Click <strong>Roll Trait</strong>.</p>`;
       return;
     }
-    const equipped = getEquippedTrait();
     traitListEl.innerHTML = inv
       .map((id) => {
         const tr = defs[id];
@@ -1852,12 +1982,34 @@
     return themes[id] || themes.knife;
   }
 
+  function traitRollTheme(id) {
+    const themes = {
+      dash: { a: "#2471a3", b: "#154360", border: "#5dade2", glow: "rgba(93, 173, 226, 0.9)" },
+      speedy: { a: "#1e8449", b: "#0e6251", border: "#2ecc71", glow: "rgba(46, 204, 113, 0.9)" },
+      transparency: { a: "#5b2c6f", b: "#2e1a36", border: "#bb8fce", glow: "rgba(187, 143, 206, 0.85)" },
+      teleport_jump: { a: "#117a65", b: "#0b5345", border: "#1abc9c", glow: "rgba(26, 188, 156, 0.9)" },
+    };
+    return themes[id] || themes.dash;
+  }
+
+  function setRollButtonsDisabled(disabled) {
+    if (btnRollWeapon) btnRollWeapon.disabled = disabled ? true : !canRoll();
+    if (btnRollTrait) btnRollTrait.disabled = disabled ? true : !canRoll() || !canRollTrait();
+  }
+
   function stopRollAnimation() {
     if (rollAnimTimer) {
       clearInterval(rollAnimTimer);
       rollAnimTimer = null;
     }
-    if (btnRollWeapon) btnRollWeapon.disabled = false;
+    setRollButtonsDisabled(false);
+  }
+
+  function setRollCardShape(kind) {
+    const isTrait = kind === "trait";
+    if (rollCardInnerEl) rollCardInnerEl.classList.toggle("is-trait-star", isTrait);
+    const scene = rollOverlayEl?.querySelector(".roll-card-scene");
+    if (scene) scene.classList.toggle("is-trait-star", isTrait);
   }
 
   function hideRollOverlay() {
@@ -1866,16 +2018,19 @@
     rollOverlayEl.classList.add("hidden");
     rollOverlayEl.setAttribute("aria-hidden", "true");
     if (rollCardInnerEl) {
-      rollCardInnerEl.classList.remove("is-shuffling", "is-revealed");
+      rollCardInnerEl.classList.remove("is-shuffling", "is-revealed", "is-trait-star");
     }
+    const scene = rollOverlayEl.querySelector(".roll-card-scene");
+    if (scene) scene.classList.remove("is-trait-star");
     if (rollRevealTextEl) rollRevealTextEl.classList.remove("is-visible");
     if (btnRollDone) btnRollDone.classList.add("hidden");
-    if (btnRollWeapon) btnRollWeapon.disabled = !canRoll();
+    setRollButtonsDisabled(false);
   }
 
-  function showRollOverlay() {
+  function showRollOverlay(kind) {
     if (!rollOverlayEl || !rollCardInnerEl) return;
     stopRollAnimation();
+    setRollCardShape(kind);
     if (rollRevealTextEl) {
       rollRevealTextEl.textContent = "";
       rollRevealTextEl.classList.remove("is-visible");
@@ -1894,27 +2049,31 @@
     }
     rollOverlayEl.classList.remove("hidden");
     rollOverlayEl.setAttribute("aria-hidden", "false");
-    if (btnRollWeapon) btnRollWeapon.disabled = true;
+    setRollButtonsDisabled(true);
   }
 
-  function setRollShufflePreview(name) {
-    if (rollFrontNameEl) rollFrontNameEl.textContent = name;
+  function setRollShufflePreview(id, def, kind) {
+    const d = def || { name: id, meta: "" };
+    if (rollFrontNameEl) rollFrontNameEl.textContent = d.name;
+    if (rollFrontMetaEl) rollFrontMetaEl.textContent = d.meta || "";
+    applyRollCardTheme(id, kind);
   }
 
-  function applyRollCardTheme(id) {
+  function applyRollCardTheme(id, kind) {
     if (!rollCardInnerEl) return;
-    const t = weaponRollTheme(id);
+    const t = kind === "trait" ? traitRollTheme(id) : weaponRollTheme(id);
     rollCardInnerEl.style.setProperty("--roll-front-a", t.a);
     rollCardInnerEl.style.setProperty("--roll-front-b", t.b);
     rollCardInnerEl.style.setProperty("--roll-border", t.border);
     rollCardInnerEl.style.setProperty("--roll-glow", t.glow);
   }
 
-  function revealRollCard(finalId) {
-    const defs = weaponDefs();
-    const d = defs[finalId] || { name: finalId, meta: "" };
-    applyRollCardTheme(finalId);
-    if (rollCardLabelEl) rollCardLabelEl.textContent = "You got";
+  function revealRollCard(finalId, def, kind) {
+    const d = def || { name: finalId, meta: "" };
+    applyRollCardTheme(finalId, kind);
+    if (rollCardLabelEl) {
+      rollCardLabelEl.textContent = kind === "trait" ? "Trait unlocked" : "You got";
+    }
     if (rollFrontNameEl) rollFrontNameEl.textContent = d.name;
     if (rollFrontMetaEl) rollFrontMetaEl.textContent = d.meta || "";
     if (rollCardInnerEl) {
@@ -1927,7 +2086,42 @@
       rollRevealTextEl.classList.add("is-visible");
     }
     if (btnRollDone) btnRollDone.classList.remove("hidden");
-    setGameStatus(`Rolled: ${d.name}`, "success");
+    setGameStatus(
+      kind === "trait" ? `Rolled trait: ${d.name}` : `Rolled: ${d.name}`,
+      "success"
+    );
+  }
+
+  function runRollAnimation(opts) {
+    const { shuffleOrder, getDef, rollFinal, onComplete, kind, rollingLabel } = opts;
+    if (!rollOverlayEl || !rollCardInnerEl) {
+      const finalId = rollFinal();
+      onComplete(finalId);
+      return;
+    }
+    if (rollAnimTimer) return;
+
+    const shuffleMs = 2000;
+    const shuffleEnd = now() + shuffleMs;
+    showRollOverlay(kind);
+    setGameStatus(rollingLabel || "Rolling…", "");
+
+    let i = 0;
+    rollAnimTimer = setInterval(() => {
+      const id = shuffleOrder[i % shuffleOrder.length];
+      i++;
+      const preview = getDef(id);
+      setRollShufflePreview(id, preview, kind);
+
+      if (now() >= shuffleEnd) {
+        clearInterval(rollAnimTimer);
+        rollAnimTimer = null;
+        const finalId = rollFinal();
+        const finalDef = getDef(finalId);
+        revealRollCard(finalId, finalDef, kind);
+        onComplete(finalId);
+      }
+    }, 75);
   }
 
   function rollWeapon() {
@@ -1940,52 +2134,30 @@
       );
       return;
     }
-    if (!rollOverlayEl || !rollCardInnerEl) {
-      const finalId = rollWeaponId();
-      ensureWeaponInInventory(finalId);
-      if (!profile.equipped) profile.equipped = finalId;
-      if (currentUser) saveProfileFor(currentUser, profile);
-      setEquipped(profile.equipped);
-      setGameStatus(`Rolled: ${weaponDefs()[finalId].name}`, "success");
-      return;
-    }
-    if (rollAnimTimer) return;
-
     const defs = weaponDefs();
-    const order = [
-      "knife",
-      "bow",
-      "dagger",
-      "rpg",
-      "scythe",
-      "laser_launcher",
-      "reinforced_bow",
-    ];
-    const shuffleMs = 2000;
-    const shuffleEnd = now() + shuffleMs;
-
-    showRollOverlay();
-    setGameStatus("Rolling…", "");
-
-    let i = 0;
-    rollAnimTimer = setInterval(() => {
-      const id = order[i % order.length];
-      i++;
-      setRollShufflePreview(defs[id].name);
-
-      if (now() >= shuffleEnd) {
-        clearInterval(rollAnimTimer);
-        rollAnimTimer = null;
-        const finalId = rollWeaponId();
-        revealRollCard(finalId);
+    runRollAnimation({
+      kind: "weapon",
+      rollingLabel: "Rolling weapon…",
+      shuffleOrder: [
+        "knife",
+        "bow",
+        "dagger",
+        "rpg",
+        "scythe",
+        "laser_launcher",
+        "reinforced_bow",
+      ],
+      getDef: (id) => defs[id] || { name: id, meta: "" },
+      rollFinal: rollWeaponId,
+      onComplete: (finalId) => {
         ensureWeaponInInventory(finalId);
         if (!profile.equipped) profile.equipped = finalId;
-        if (currentUser) saveProfileFor(currentUser, profile);
+        persistProfile();
         setEquipped(profile.equipped);
         renderWeaponsModal();
         showShareBox(roomCode || "");
-      }
-    }, 75);
+      },
+    });
   }
 
   function rollTrait() {
@@ -1997,13 +2169,20 @@
       setGameStatus("Need 5 kills to roll a trait.", "error");
       return;
     }
-    const id = rollTraitId();
-    ensureTraitInInventory(id);
-    if (!getEquippedTrait()) setEquippedTrait(id);
-    else if (currentUser) saveProfileFor(currentUser, profile);
-    const td = traitDefs();
-    setGameStatus(`Rolled trait: ${td[id].name} — equip in Traits list`, "success");
-    renderWeaponsModal();
+    const defs = traitDefs();
+    runRollAnimation({
+      kind: "trait",
+      rollingLabel: "Rolling trait…",
+      shuffleOrder: ["dash", "speedy", "transparency", "teleport_jump"],
+      getDef: (id) => defs[id] || { name: id, meta: "" },
+      rollFinal: rollTraitId,
+      onComplete: (finalId) => {
+        ensureTraitInInventory(finalId);
+        if (!getEquippedTrait()) setEquippedTrait(finalId);
+        else persistProfile();
+        renderWeaponsModal();
+      },
+    });
   }
 
   function canAttack() {
@@ -2018,7 +2197,7 @@
     if (weaponId === "knife") return 500;
     if (weaponId === "scythe") return 300;
     if (weaponId === "bow") return 1000;
-    if (weaponId === "reinforced_bow") return 1200;
+    if (weaponId === "reinforced_bow") return 1000;
     if (weaponId === "dagger") return isThrow ? 1200 : 700;
     if (weaponId === "rpg") return 2000;
     if (weaponId === "laser_launcher") return 1500;
@@ -2037,7 +2216,7 @@
     if (weaponId === "knife") return 10;
     if (weaponId === "scythe") return 10;
     if (weaponId === "bow") return 8;
-    if (weaponId === "reinforced_bow") return 10;
+    if (weaponId === "reinforced_bow") return 20;
     if (weaponId === "dagger") return 7;
     if (weaponId === "rpg") return 25;
     if (weaponId === "tos_rpg") return 35;
@@ -2275,17 +2454,10 @@
   function applyDamage(targetId, dmg, attackerId) {
     const t = players.get(targetId);
     if (!t) return;
-    if (!isPlayerAlive(t)) return;
-    const wasAlive = t.hp > 0;
     t.hp = Math.max(0, (typeof t.hp === "number" ? t.hp : MAX_HP) - dmg);
     const msg = { type: "hp", id: targetId, hp: t.hp, attackerId };
     if (mode === "host") broadcast(msg);
     handleMessage(msg);
-
-    if (wasAlive && t.hp === 0 && attackerId && (mode === "host" || mode === "solo")) {
-      if (mode === "host") hostSlain(targetId, attackerId);
-    }
-
     if (t.hp === 0 && attackerId) {
       const a = players.get(attackerId);
       if (a) {
@@ -2293,10 +2465,10 @@
         const km = { type: "kills", id: attackerId, kills: a.kills };
         if (mode === "host") broadcast(km);
         handleMessage(km);
+        // persist local player's kills
         if (localPlayer && attackerId === localPlayer.id) {
-          if (!profile) profile = getDefaultProfile();
           profile.kills = a.kills;
-          if (currentUser) saveProfileFor(currentUser, profile);
+          persistProfile();
           renderWeaponsModal();
         }
       }
@@ -2399,14 +2571,14 @@
     setBusy(false);
   });
 
-  on(btnLeave, "click", showMenu);
-  on(btnStartGame, "click", hostStartGame);
-  on(btnVoteNext, "click", voteNextGame);
-  on(btnCopyUrl, "click", () => copyText(shareUrlInput.value));
-  on(btnWeapons, "click", openWeaponsModal);
-  on(btnSettings, "click", openSettingsModal);
-  on(btnCloseWeapons, "click", closeWeaponsModal);
-  on(weaponsModalEl, "click", (e) => {
+  btnLeave.addEventListener("click", showMenu);
+  if (btnStartGame) btnStartGame.addEventListener("click", hostStartGame);
+  if (btnVoteNext) btnVoteNext.addEventListener("click", voteNextGame);
+  btnCopyUrl.addEventListener("click", () => copyText(shareUrlInput.value));
+  btnWeapons.addEventListener("click", openWeaponsModal);
+  btnSettings.addEventListener("click", openSettingsModal);
+  btnCloseWeapons.addEventListener("click", closeWeaponsModal);
+  weaponsModalEl.addEventListener("click", (e) => {
     if (e.target === weaponsModalEl) closeWeaponsModal();
   });
   on(btnRollWeapon, "click", () => {
@@ -2414,17 +2586,21 @@
     rollWeapon();
     renderWeaponsModal();
   });
-  on(btnRollDone, "click", hideRollOverlay);
   on(btnRollTrait, "click", () => {
     if (!profile) profile = getDefaultProfile();
     rollTrait();
   });
-  on(btnRedeem, "click", redeemCode);
-  on(btnCloseSettings, "click", closeSettingsModal);
-  on(settingsModalEl, "click", (e) => {
+  btnRedeem.addEventListener("click", redeemCode);
+  btnCloseSettings.addEventListener("click", closeSettingsModal);
+  settingsModalEl.addEventListener("click", (e) => {
     if (e.target === settingsModalEl) closeSettingsModal();
   });
-  on(backpackListEl, "click", (e) => {
+  btnRedeem.addEventListener("click", redeemCode);
+  btnCloseSettings.addEventListener("click", closeSettingsModal);
+  settingsModalEl.addEventListener("click", (e) => {
+    if (e.target === settingsModalEl) closeSettingsModal();
+  });
+  backpackListEl.addEventListener("click", (e) => {
     const t = e.target;
     if (!(t instanceof HTMLElement)) return;
     const id = t.getAttribute("data-equip");
@@ -2438,12 +2614,18 @@
     if (id) setEquippedTrait(id);
   });
 
-  on(btnKick, "click", () => {
+  on(playerNameInput, "input", () => {
+    if (weaponsModalEl && !weaponsModalEl.classList.contains("hidden")) {
+      renderWeaponsModal();
+    }
+  });
+
+  btnKick.addEventListener("click", () => {
     if (!menuTargetPlayer) return;
     kickPlayer(menuTargetPlayer.id, kickReasonInput.value);
   });
 
-  on(btnBan, "click", () => {
+  btnBan.addEventListener("click", () => {
     if (!menuTargetPlayer) return;
     const user = menuTargetPlayer.user;
     if (!user) {
@@ -2455,28 +2637,44 @@
     setGameStatus(`Banned ${user} from this room`, "success");
   });
 
-  on(btnClosePlayerMenu, "click", closePlayerMenu);
+  btnBan.addEventListener("click", () => {
+    if (!menuTargetPlayer) return;
+    const user = menuTargetPlayer.user;
+    if (!user) {
+      setGameStatus("That player has no account username to ban.", "error");
+      return;
+    }
+    banAccount(roomCode, user);
+    kickPlayer(menuTargetPlayer.id, "Banned");
+    setGameStatus(`Banned ${user} from this room`, "success");
+  });
 
-  on(playerMenuEl, "click", (e) => {
+  btnClosePlayerMenu.addEventListener("click", closePlayerMenu);
+
+  playerMenuEl.addEventListener("click", (e) => {
     if (e.target === playerMenuEl) closePlayerMenu();
   });
 
-  on(btnKickedOk, "click", () => {
+  btnKickedOk.addEventListener("click", () => {
     hideKickedOverlay();
     showMenu();
   });
 
-  // Admin menu: right click
+  // Right-click: Teleport Jump trait, or P1 admin menu on another player
   canvas.addEventListener("contextmenu", (e) => {
     e.preventDefault();
-    if (!isP1()) return;
-    if (!playerMenuEl.classList.contains("hidden")) return;
+    if (!isGameScreenActive() || !localPlayer) return;
     const { x, y } = getCanvasCoords(e.clientX, e.clientY);
     const target = findClickedPlayer(x, y);
-    if (target) {
-      suppressNextAttack = true;
-      openPlayerMenu(target);
+
+    if (getEquippedTrait() === "teleport_jump") {
+      const teleportTarget =
+        !target || target.id === localPlayer.id ? { x, y } : null;
+      if (teleportTarget && tryTeleportJump(teleportTarget.x, teleportTarget.y)) return;
     }
+
+    if (!isP1()) return;
+    if (target && target.id !== localPlayer.id) openPlayerMenu(target);
   });
 
   canvas.addEventListener("mousemove", (e) => {
@@ -2494,14 +2692,17 @@
     lastAim = { x, y };
     clickDownAt = now();
 
-    // P1 long-press (left button) to open admin menu
+    // P1 long-press to open admin menu (left click hold)
     suppressNextAttack = false;
     if (isP1() && e.button === 0) {
+      adminHoldPos = { x: e.clientX, y: e.clientY };
       if (adminHoldTimer) clearTimeout(adminHoldTimer);
-      const cx = e.clientX;
-      const cy = e.clientY;
       adminHoldTimer = setTimeout(() => {
-        const c = getCanvasCoords(cx, cy);
+        const moved =
+          !adminHoldPos ||
+          Math.hypot(e.clientX - adminHoldPos.x, e.clientY - adminHoldPos.y) > 6;
+        if (moved) return;
+        const c = getCanvasCoords(e.clientX, e.clientY);
         const target = findClickedPlayer(c.x, c.y);
         if (target) {
           suppressNextAttack = true;
@@ -2547,14 +2748,9 @@
   });
 
   window.addEventListener("keydown", (e) => {
-    if (isTypingInField()) return;
-
-    const k = e.key.toLowerCase();
-    keys[k] = true;
-
-    if (isGameScreenActive() && k === "q") {
-      if (isMultiplayerMatch() && !isLocalPlayerAlive()) return;
-      const trait = getEquippedTrait();
+    keys[e.key.toLowerCase()] = true;
+    if (e.key.toLowerCase() === "q") {
+      const trait = localPlayer?.trait || profile?.trait;
       if (trait === "dash" && localPlayer) {
         const t = now();
         if (t >= dashCooldownUntil) {
@@ -2571,25 +2767,17 @@
         }
       }
     }
-
     if (
-      isGameScreenActive() &&
-      ["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)
+      ["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(
+        e.key.toLowerCase()
+      )
     ) {
       e.preventDefault();
     }
   });
 
   window.addEventListener("keyup", (e) => {
-    if (isTypingInField()) return;
     keys[e.key.toLowerCase()] = false;
-  });
-
-  document.addEventListener("focusin", (e) => {
-    const t = e.target;
-    if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) {
-      clearMovementKeys();
-    }
   });
 
   const params = new URLSearchParams(window.location.search);
@@ -2646,9 +2834,13 @@
   });
 
   on(btnAccLogout, "click", () => {
+    exitTestMode();
     setCurrentUser(null);
     setStatus("Logged out.", "success");
   });
+
+  on(btnAccTest, "click", () => enterTestMode());
+  on(btnAccExitTest, "click", () => exitTestMode());
 
   initMultiplayerAvailability();
   if (playerNameInput) playerNameInput.focus();

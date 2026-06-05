@@ -59,6 +59,11 @@
         </div>
         <div id="accountLoggedIn" class="hidden">
           <p class="account-welcome">Logged in as <strong id="accWho"></strong></p>
+          <p id="testModeBanner" class="test-mode-banner hidden">Test mode — everything unlocked, solo only. Nothing saves to your account.</p>
+          <div class="account-row">
+            <button type="button" id="btnAccTest" class="btn btn-accent">Test Account</button>
+            <button type="button" id="btnAccExitTest" class="btn btn-secondary hidden">Exit Test Mode</button>
+          </div>
           <button type="button" id="btnAccLogout" class="btn btn-secondary">Log out</button>
         </div>
       </div>
@@ -94,7 +99,7 @@
 
         <div class="weapons-actions">
           <button type="button" id="btnRollWeapon" class="btn btn-accent">Roll Weapon</button>
-          <button type="button" id="btnRollTrait" class="btn btn-primary" disabled>Roll Trait (5 kills)</button>
+          <button type="button" id="btnRollTrait" class="btn btn-primary">Roll Trait (5 kills)</button>
         </div>
 
         <div class="divider">Weapons (Backpack)</div>

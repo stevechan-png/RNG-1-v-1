@@ -234,6 +234,22 @@ body {
   text-align: center;
 }
 
+.test-mode-banner {
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 6px;
+  background: rgba(243, 156, 18, 0.15);
+  border: 1px solid rgba(243, 156, 18, 0.45);
+  color: #f5d78e;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  text-align: center;
+}
+
+#accountLoggedIn .account-row {
+  margin-bottom: 0.5rem;
+}
+
 .game-share-hint {
   width: min(800px, 100%);
   font-size: 0.8rem;
@@ -611,6 +627,67 @@ body {
     transform: scale(1);
     opacity: 1;
   }
+}
+
+.roll-card-scene.is-trait-star {
+  width: min(320px, 78vw);
+  height: min(320px, 78vw);
+}
+
+.roll-card-inner.is-trait-star.is-shuffling {
+  animation: rollStarShuffle 0.28s ease-in-out infinite;
+}
+
+@keyframes rollStarShuffle {
+  0%,
+  100% {
+    transform: scale(1) rotate(-4deg);
+  }
+  50% {
+    transform: scale(1.1) rotate(6deg);
+  }
+}
+
+.roll-card-inner.is-trait-star.is-revealed {
+  animation: rollStarReveal 0.55s cubic-bezier(0.34, 1.35, 0.64, 1) forwards;
+}
+
+@keyframes rollStarReveal {
+  0% {
+    transform: scale(1.05) rotate(0deg);
+  }
+  45% {
+    transform: scale(1.16) rotate(12deg);
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+.roll-card-inner.is-trait-star .roll-card-face {
+  clip-path: polygon(
+    50% 0%,
+    61% 35%,
+    98% 35%,
+    68% 57%,
+    79% 91%,
+    50% 70%,
+    21% 91%,
+    32% 57%,
+    2% 35%,
+    39% 35%
+  );
+  border-radius: 0;
+  padding: 2.75rem 2rem 2.25rem;
+}
+
+.roll-card-inner.is-trait-star .roll-front-name {
+  font-size: clamp(1.35rem, 5vw, 1.85rem);
+}
+
+.roll-card-inner.is-trait-star .roll-front-meta {
+  font-size: 0.82rem;
+  max-width: 68%;
 }
 
 .roll-card-label {

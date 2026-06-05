@@ -139,6 +139,24 @@
     </div>
   </div>
 
+  <div id="selfMenu" class="modal hidden" aria-hidden="true">
+    <div class="modal-card">
+      <h2 id="selfMenuTitle">You</h2>
+      <label class="field">
+        <span>Code</span>
+        <input id="selfMenuCode" type="text" maxlength="32" placeholder="Type here…" autocomplete="off" />
+      </label>
+      <div id="testerSwitchRow" class="tester-switch-row hidden">
+        <label class="tester-switch">
+          <input type="checkbox" id="testerTraitSwitch" />
+          <span class="tester-switch-ui" aria-hidden="true"></span>
+          <span class="tester-switch-text">Instant trait roll</span>
+        </label>
+      </div>
+      <button type="button" id="btnCloseSelfMenu" class="btn btn-secondary">Close</button>
+    </div>
+  </div>
+
   <div id="winOverlay" class="kicked-overlay hidden" aria-hidden="true">
     <div class="kicked-card win-card">
       <p id="winMessage"></p>

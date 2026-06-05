@@ -66,6 +66,12 @@
   const btnKick = document.getElementById("btnKick");
   const btnBan = document.getElementById("btnBan");
   const btnClosePlayerMenu = document.getElementById("btnClosePlayerMenu");
+  const selfMenuEl = document.getElementById("selfMenu");
+  const selfMenuTitleEl = document.getElementById("selfMenuTitle");
+  const selfMenuCodeEl = document.getElementById("selfMenuCode");
+  const testerSwitchRowEl = document.getElementById("testerSwitchRow");
+  const testerTraitSwitchEl = document.getElementById("testerTraitSwitch");
+  const btnCloseSelfMenu = document.getElementById("btnCloseSelfMenu");
   const kickedOverlayEl = document.getElementById("kickedOverlay");
   const kickedMessageEl = document.getElementById("kickedMessage");
   const btnKickedOk = document.getElementById("btnKickedOk");
@@ -131,10 +137,15 @@
   const LS_ACCOUNTS = "bg_accounts_v1";
   const LS_CURRENT = "bg_current_user_v1";
   const LS_ROOM_BANS = "bg_room_bans_v1"; // host-side only
+  const LS_TESTER_CODE = "bg_tester_code_v1";
+  const LS_TESTER_TRAIT = "bg_tester_trait_v1";
+  const TESTER_CODE = "tester";
   let currentUser = null;
   let profile = null; // { inventory: string[], equipped: string|null, kills:number, trait:string|null }
   let testMode = false;
   let profileSnapshot = null;
+  let testerTraitUnlock = false;
+  let testerCodeRevealed = false;
 
   function getPlayerName() {
     return (playerNameInput.value || "Player").trim().slice(0, 20) || "Player";
@@ -338,7 +349,63 @@
   }
 
   function hasInstantTraitUnlock() {
-    return testMode || isV4v5v6User();
+    return testMode || isV4v5v6User() || testerTraitUnlock;
+  }
+
+  function loadTesterPrefs() {
+    try {
+      testerCodeRevealed = localStorage.getItem(LS_TESTER_CODE) === "1";
+      testerTraitUnlock = localStorage.getItem(LS_TESTER_TRAIT) === "1";
+    } catch {
+      testerCodeRevealed = false;
+      testerTraitUnlock = false;
+    }
+  }
+
+  function saveTesterTraitUnlock(on) {
+    testerTraitUnlock = !!on;
+    try {
+      if (testerTraitUnlock) localStorage.setItem(LS_TESTER_TRAIT, "1");
+      else localStorage.removeItem(LS_TESTER_TRAIT);
+    } catch (_) {}
+    renderWeaponsModal();
+  }
+
+  function revealTesterSwitch() {
+    if (!testerSwitchRowEl) return;
+    testerCodeRevealed = true;
+    try {
+      localStorage.setItem(LS_TESTER_CODE, "1");
+    } catch (_) {}
+    testerSwitchRowEl.classList.remove("hidden");
+    if (testerTraitSwitchEl) testerTraitSwitchEl.checked = testerTraitUnlock;
+  }
+
+  function checkSelfMenuCode() {
+    const code = (selfMenuCodeEl?.value || "").trim().toLowerCase();
+    if (code === TESTER_CODE) revealTesterSwitch();
+  }
+
+  function openSelfMenu() {
+    if (!selfMenuEl || !localPlayer) return;
+    if (selfMenuTitleEl) {
+      selfMenuTitleEl.textContent = `P${localPlayer.slot + 1}: ${localPlayer.name}`;
+    }
+    if (selfMenuCodeEl) selfMenuCodeEl.value = "";
+    if (testerSwitchRowEl) {
+      testerSwitchRowEl.classList.toggle("hidden", !testerCodeRevealed);
+    }
+    if (testerTraitSwitchEl) testerTraitSwitchEl.checked = testerTraitUnlock;
+    selfMenuEl.classList.remove("hidden");
+    selfMenuEl.setAttribute("aria-hidden", "false");
+    if (selfMenuCodeEl) selfMenuCodeEl.focus();
+  }
+
+  function closeSelfMenu() {
+    if (!selfMenuEl) return;
+    selfMenuEl.classList.add("hidden");
+    selfMenuEl.setAttribute("aria-hidden", "true");
+    if (selfMenuCodeEl) selfMenuCodeEl.value = "";
   }
 
   function cloneProfile(prof) {
@@ -967,6 +1034,15 @@
     kickReasonInput.value = "";
   }
 
+  function isBlockingModalOpen() {
+    if (kickedOverlayEl && !kickedOverlayEl.classList.contains("hidden")) return true;
+    if (playerMenuEl && !playerMenuEl.classList.contains("hidden")) return true;
+    if (selfMenuEl && !selfMenuEl.classList.contains("hidden")) return true;
+    if (weaponsModalEl && !weaponsModalEl.classList.contains("hidden")) return true;
+    if (rollOverlayEl && !rollOverlayEl.classList.contains("hidden")) return true;
+    return false;
+  }
+
   function kickPlayer(playerId, reason) {
     const conn = peerToConn.get(playerId);
     if (!conn || !localPlayer) return;
@@ -1346,6 +1422,8 @@
 
   function showMenu() {
     destroyPeer();
+    closePlayerMenu();
+    closeSelfMenu();
     canvas.classList.remove("p1-cursor");
     gameEl.classList.remove("active");
     menuEl.classList.add("active");
@@ -2590,6 +2668,7 @@
     if (!profile) profile = getDefaultProfile();
     rollTrait();
   });
+  on(btnRollDone, "click", hideRollOverlay);
   btnRedeem.addEventListener("click", redeemCode);
   btnCloseSettings.addEventListener("click", closeSettingsModal);
   settingsModalEl.addEventListener("click", (e) => {
@@ -2655,21 +2734,47 @@
     if (e.target === playerMenuEl) closePlayerMenu();
   });
 
+  if (selfMenuEl) {
+    selfMenuEl.addEventListener("click", (e) => {
+      if (e.target === selfMenuEl) closeSelfMenu();
+    });
+  }
+
+  on(selfMenuCodeEl, "input", checkSelfMenuCode);
+  on(selfMenuCodeEl, "keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      checkSelfMenuCode();
+    }
+  });
+  on(testerTraitSwitchEl, "change", () => {
+    saveTesterTraitUnlock(testerTraitSwitchEl.checked);
+    setGameStatus(
+      testerTraitSwitchEl.checked ? "Instant trait roll enabled." : "Instant trait roll disabled.",
+      testerTraitSwitchEl.checked ? "success" : ""
+    );
+  });
+  on(btnCloseSelfMenu, "click", closeSelfMenu);
+
   btnKickedOk.addEventListener("click", () => {
     hideKickedOverlay();
     showMenu();
   });
 
-  // Right-click: Teleport Jump trait, or P1 admin menu on another player
+  // Right-click: self menu, Teleport Jump, or P1 admin menu on another player
   canvas.addEventListener("contextmenu", (e) => {
     e.preventDefault();
     if (!isGameScreenActive() || !localPlayer) return;
     const { x, y } = getCanvasCoords(e.clientX, e.clientY);
     const target = findClickedPlayer(x, y);
 
+    if (target && target.id === localPlayer.id) {
+      openSelfMenu();
+      return;
+    }
+
     if (getEquippedTrait() === "teleport_jump") {
-      const teleportTarget =
-        !target || target.id === localPlayer.id ? { x, y } : null;
+      const teleportTarget = !target ? { x, y } : null;
       if (teleportTarget && tryTeleportJump(teleportTarget.x, teleportTarget.y)) return;
     }
 
@@ -2685,9 +2790,7 @@
   // Combat: aim at click (mousedown/up for dagger long-throw)
   canvas.addEventListener("mousedown", (e) => {
     if (!canAttack()) return;
-    if (kickedOverlayEl && !kickedOverlayEl.classList.contains("hidden")) return;
-    if (!playerMenuEl.classList.contains("hidden")) return;
-    if (!weaponsModalEl.classList.contains("hidden")) return;
+    if (isBlockingModalOpen()) return;
     const { x, y } = getCanvasCoords(e.clientX, e.clientY);
     lastAim = { x, y };
     clickDownAt = now();
@@ -2787,6 +2890,7 @@
   }
 
   // Account boot
+  loadTesterPrefs();
   try {
     const remembered = localStorage.getItem(LS_CURRENT);
     if (remembered) setCurrentUser(remembered);

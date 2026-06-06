@@ -1915,6 +1915,39 @@
     return true;
   }
 
+  function tickCombatSim(dt) {
+    if (mode !== "host" && mode !== "solo") return;
+    stepProjectiles(dt);
+    stepLasers(dt);
+    updateLocalLaserAim();
+    if (mode === "host") {
+      if (projectiles.length > 0) {
+        projSyncAccum += dt;
+        if (projSyncAccum >= 0.05) {
+          projSyncAccum = 0;
+          broadcastProjTick();
+        }
+      }
+      if (activeLasers.length > 0) {
+        broadcastLaserSync();
+      }
+    }
+  }
+
+  function drawActiveLasers() {
+    for (const L of activeLasers) {
+      const owner = players.get(L.owner);
+      if (!owner) continue;
+      ctx.strokeStyle = "rgba(52, 152, 219, 0.85)";
+      ctx.lineWidth = LASER_BEAM_WIDTH;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(owner.x, owner.y);
+      ctx.lineTo(L.aimX, L.aimY);
+      ctx.stroke();
+    }
+  }
+
   function tickMatchSystems() {
     clear3cCooldownIfExpired();
     if (mode === "host") hostTickMatchPhase();
@@ -1931,6 +1964,15 @@
 
   function update() {
     tickMatchSystems();
+
+    const t = now();
+    let dt = 0;
+    if (lastLoopTime > 0) {
+      dt = Math.min(0.05, (t - lastLoopTime) / 1000);
+    }
+    lastLoopTime = t;
+    if (dt > 0) tickCombatSim(dt);
+
     if (!localPlayer) return;
     if (isMultiplayerMatch() && !isLocalPlayerAlive()) return;
     let dx = 0;
@@ -1952,6 +1994,7 @@
 
   function render() {
     drawLandscape();
+    drawActiveLasers();
     // projectiles
     for (const pr of projectiles) {
       if (pr.kind === "arrow") {
@@ -2849,18 +2892,19 @@
   function applyDamage(targetId, dmg, attackerId) {
     const t = players.get(targetId);
     if (!t) return;
-    t.hp = Math.max(0, (typeof t.hp === "number" ? t.hp : MAX_HP) - dmg);
+    const prevHp = typeof t.hp === "number" ? t.hp : MAX_HP;
+    t.hp = Math.max(0, prevHp - dmg);
     const msg = { type: "hp", id: targetId, hp: t.hp, attackerId };
     if (mode === "host") broadcast(msg);
     handleMessage(msg);
-    if (t.hp === 0 && attackerId) {
+    if (prevHp > 0 && t.hp === 0 && attackerId) {
+      if (mode === "host" || mode === "solo") hostSlain(targetId, attackerId);
       const a = players.get(attackerId);
       if (a) {
         a.kills = (typeof a.kills === "number" ? a.kills : 0) + 1;
         const km = { type: "kills", id: attackerId, kills: a.kills };
         if (mode === "host") broadcast(km);
         handleMessage(km);
-        // persist local player's kills
         if (localPlayer && attackerId === localPlayer.id) {
           profile.kills = a.kills;
           persistProfile();

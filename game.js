@@ -57,6 +57,13 @@
   const btnRollTrait = document.getElementById("btnRollTrait");
   const killsLabelEl = document.getElementById("killsLabel");
   const traitLabelEl = document.getElementById("traitLabel");
+  const luckLabelEl = document.getElementById("luckLabel");
+  const tabWeaponsEl = document.getElementById("tabWeapons");
+  const tabLuckEl = document.getElementById("tabLuck");
+  const panelWeaponsEl = document.getElementById("panelWeapons");
+  const panelLuckEl = document.getElementById("panelLuck");
+  const luckListEl = document.getElementById("luckList");
+  const luckStatusEl = document.getElementById("luckStatus");
   const settingsModalEl = document.getElementById("settingsModal");
   const redeemCodeEl = document.getElementById("redeemCode");
   const btnRedeem = document.getElementById("btnRedeem");
@@ -154,6 +161,13 @@
   let profileSnapshot = null;
   let testerTraitUnlock = false;
   let testerCodeRevealed = false;
+  let inventoryTab = "weapons";
+
+  const LUCK_TIERS = [
+    { mult: 2, cost: 10, label: "2× Luck", meta: "Permanent — better odds on weapons & traits; 1-in-2 items drop off the table (knife, dash)" },
+    { mult: 3, cost: 20, label: "3× Luck", meta: "Permanent — odds ÷3 (1-in-50 → 1-in-17) for weapons & traits" },
+    { mult: 4, cost: 45, label: "4× Luck", meta: "Permanent — odds ÷4 (1-in-50 → 1-in-12) for weapons & traits" },
+  ];
 
   function getPlayerName() {
     return (playerNameInput.value || "Player").trim().slice(0, 20) || "Player";
@@ -355,24 +369,83 @@
     };
   }
 
-  function rollWeaponId() {
-    // One roll, global odds exactly as listed on each weapon; leftover chance is bow:dagger 3:1.
+  function getLuckMultiplier() {
+    if (!profile) return 1;
+    const mult = profile.luckMultiplier || 1;
+    return Math.max(1, Math.min(4, mult));
+  }
+
+  /** Luck >= N means 1-in-N would become 1-in-1 or better — item leaves the loot table. */
+  function isLuckExcludedFromTable(oneInN) {
+    return getLuckMultiplier() >= oneInN;
+  }
+
+  /** 1-in-N odds with luck: 2× turns 1/50 into 1/25. Returns 0 if excluded (≥1/1). */
+  function luckChance(oneInN) {
+    if (isLuckExcludedFromTable(oneInN)) return 0;
+    return getLuckMultiplier() / oneInN;
+  }
+
+  const WEAPON_ROLL_TIERS = [
+    ["knife", 2],
+    ["rpg", 35],
+    ["scythe", 55],
+    ["laser_launcher", 90],
+    ["reinforced_bow", 140],
+  ];
+
+  const TRAIT_ROLL_TIERS = [
+    ["teleport_jump", 50],
+    ["dash", 2],
+    ["speedy", 6],
+    ["transparency", 22],
+  ];
+
+  const TRAIT_REST_WEIGHTS = [
+    ["dash", 315],
+    ["speedy", 70],
+    ["transparency", 18],
+  ];
+
+  function rollFromTiers(tiers, restWeights) {
     const r = Math.random();
     let cut = 0;
-    const tiers = [
-      ["knife", 1 / 2],
-      ["rpg", 1 / 35],
-      ["scythe", 1 / 55],
-      ["laser_launcher", 1 / 90],
-      ["reinforced_bow", 1 / 140],
-    ];
-    for (const [id, chance] of tiers) {
+    for (const [id, oneInN] of tiers) {
+      const chance = luckChance(oneInN);
+      if (chance <= 0) continue;
+      cut += chance;
+      if (r < cut) return id;
+    }
+    const pool = restWeights.filter(([id]) => {
+      const tier = tiers.find((t) => t[0] === id);
+      return tier && !isLuckExcludedFromTable(tier[1]);
+    });
+    if (pool.length === 0) return restWeights[0][0];
+    const totalW = pool.reduce((s, [, w]) => s + w, 0);
+    let pick = Math.random() * totalW;
+    for (const [id, w] of pool) {
+      pick -= w;
+      if (pick <= 0) return id;
+    }
+    return pool[pool.length - 1][0];
+  }
+
+  function rollWeaponId() {
+    const r = Math.random();
+    let cut = 0;
+    for (const [id, oneInN] of WEAPON_ROLL_TIERS) {
+      const chance = luckChance(oneInN);
+      if (chance <= 0) continue;
       cut += chance;
       if (r < cut) return id;
     }
     const rest = 1 - cut;
-    const inRest = (r - cut) / rest;
+    const inRest = rest > 0 ? (r - cut) / rest : 0;
     return inRest < 0.75 ? "bow" : "dagger";
+  }
+
+  function rollTraitId() {
+    return rollFromTiers(TRAIT_ROLL_TIERS, TRAIT_REST_WEIGHTS);
   }
 
   function loadAccounts() {
@@ -477,6 +550,8 @@
       trait: null,
       traitInventory: Object.keys(traitDefs()),
       equippedTrait: null,
+      luckMultiplier: 4,
+      traitRollUnlocked: true,
     });
   }
 
@@ -515,6 +590,85 @@
     setStatus("Test mode off — your real account progress is restored.", "success");
   }
 
+  function markTraitRollUnlockedIfEligible() {
+    if (!profile || testMode) return;
+    if (profile.traitRollUnlocked) return;
+    if (getKillCount() >= 5 || hasInstantTraitUnlock()) {
+      profile.traitRollUnlocked = true;
+      persistProfile();
+    }
+  }
+
+  function spendKills(amount) {
+    if (!profile) profile = getDefaultProfile();
+    markTraitRollUnlockedIfEligible();
+    const current = getKillCount();
+    if (current < amount) return false;
+    const newKills = current - amount;
+    profile.kills = newKills;
+    if (localPlayer) {
+      localPlayer.kills = newKills;
+      if (mode === "host") {
+        broadcast({ type: "kills", id: localPlayer.id, kills: newKills });
+      } else if (mode === "guest") {
+        sendToHost({ type: "kills", kills: newKills });
+      }
+    }
+    persistProfile();
+    return true;
+  }
+
+  function buyLuckUpgrade(targetMult) {
+    if (!profile) profile = getDefaultProfile();
+    if (testMode) {
+      setLuckStatus("Luck purchases don't save in test mode.", "error");
+      return;
+    }
+    const tier = LUCK_TIERS.find((t) => t.mult === targetMult);
+    if (!tier) return;
+    const current = getLuckMultiplier();
+    if (current >= targetMult) {
+      setLuckStatus(`You already have ${current}× luck.`, "error");
+      return;
+    }
+    const nextTier = LUCK_TIERS.find((t) => t.mult > current);
+    if (!nextTier || nextTier.mult !== targetMult) {
+      setLuckStatus("Buy luck in order: 2×, then 3×, then 4×.", "error");
+      return;
+    }
+    if (!spendKills(tier.cost)) {
+      setLuckStatus(`Need ${tier.cost} kills (you have ${getKillCount()}).`, "error");
+      return;
+    }
+    profile.luckMultiplier = targetMult;
+    persistProfile();
+    renderWeaponsModal();
+    setLuckStatus(`Permanent ${targetMult}× luck unlocked!`, "success");
+    setGameStatus(`Permanent luck boost: ${targetMult}×`, "success");
+  }
+
+  function setLuckStatus(msg, type) {
+    if (!luckStatusEl) return;
+    luckStatusEl.textContent = msg || "";
+    luckStatusEl.className = "status" + (type ? " " + type : "");
+  }
+
+  function setInventoryTab(tab) {
+    inventoryTab = tab === "upgrades" ? "upgrades" : "weapons";
+    if (tabWeaponsEl) tabWeaponsEl.classList.toggle("active", inventoryTab === "weapons");
+    if (tabLuckEl) tabLuckEl.classList.toggle("active", inventoryTab === "upgrades");
+    if (panelWeaponsEl) panelWeaponsEl.classList.toggle("hidden", inventoryTab !== "weapons");
+    if (panelLuckEl) panelLuckEl.classList.toggle("hidden", inventoryTab !== "upgrades");
+    if (inventoryTab === "upgrades") {
+      clearMovementKeys();
+      renderLuckPanel();
+    }
+  }
+
+  function isInventoryModalOpen() {
+    return weaponsModalEl && !weaponsModalEl.classList.contains("hidden");
+  }
+
   function getKillCount() {
     const fromPlayer = localPlayer && typeof localPlayer.kills === "number" ? localPlayer.kills : 0;
     const fromProfile = profile && typeof profile.kills === "number" ? profile.kills : 0;
@@ -523,6 +677,7 @@
 
   function canRollTrait() {
     if (hasInstantTraitUnlock()) return true;
+    if (profile?.traitRollUnlocked) return true;
     return getKillCount() >= 5;
   }
 
@@ -534,6 +689,8 @@
       trait: null,
       traitInventory: [],
       equippedTrait: null,
+      luckMultiplier: 1,
+      traitRollUnlocked: false,
     };
   }
 
@@ -544,7 +701,15 @@
       prof.traitInventory.push(prof.trait);
     }
     if (!prof.equippedTrait && prof.trait) prof.equippedTrait = prof.trait;
+    if (typeof prof.luckMultiplier !== "number") prof.luckMultiplier = 1;
+    if (typeof prof.traitRollUnlocked !== "boolean") {
+      prof.traitRollUnlocked = getKillCountFromProfile(prof) >= 5;
+    }
     return prof;
+  }
+
+  function getKillCountFromProfile(prof) {
+    return prof && typeof prof.kills === "number" ? prof.kills : 0;
   }
 
   function loadProfileFor(user) {
@@ -648,9 +813,9 @@
 
   function traitDefs() {
     return {
-      dash: { id: "dash", name: "Dash", meta: "Press Q to dash a short distance" },
-      speedy: { id: "speedy", name: "Speedy", meta: "1.2× movement speed" },
-      transparency: { id: "transparency", name: "Transparency", meta: "20% less visible" },
+      dash: { id: "dash", name: "Dash", meta: "Press Q to dash a short distance • 1/2" },
+      speedy: { id: "speedy", name: "Speedy", meta: "1.2× movement speed • 1/6" },
+      transparency: { id: "transparency", name: "Transparency", meta: "20% less visible • 1/22" },
       teleport_jump: {
         id: "teleport_jump",
         name: "Teleport Jump",
@@ -686,14 +851,6 @@
       }
     }
     renderWeaponsModal();
-  }
-
-  function rollTraitId() {
-    if (Math.random() < 1 / 50) return "teleport_jump";
-    const r = Math.random() * (315 + 70 + 18);
-    if (r < 315) return "dash";
-    if (r < 315 + 70) return "speedy";
-    return "transparency";
   }
 
   function movementMultiplierForTrait(trait) {
@@ -1533,12 +1690,12 @@
         break;
       case "kills":
         if (players.has(msg.id)) players.get(msg.id).kills = msg.kills;
-        break;
-      case "trait":
-        if (players.has(msg.id)) players.get(msg.id).trait = msg.trait;
-        break;
-      case "kills":
-        if (players.has(msg.id)) players.get(msg.id).kills = msg.kills;
+        if (localPlayer && msg.id === localPlayer.id && profile) {
+          profile.kills = msg.kills;
+          markTraitRollUnlockedIfEligible();
+          persistProfile();
+          renderWeaponsModal();
+        }
         break;
       case "face":
         if (players.has(msg.id)) {
@@ -1676,18 +1833,6 @@
         if (!p || !isPlayerAlive(p)) return;
         p.trait = data.trait || null;
         broadcast({ type: "trait", id: p.id, trait: p.trait }, conn);
-      } else if (data.type === "kills") {
-        const p = players.get(conn.peer);
-        if (p) {
-          p.kills = typeof data.kills === "number" ? data.kills : p.kills;
-          broadcast({ type: "kills", id: p.id, kills: p.kills }, conn);
-        }
-      } else if (data.type === "trait") {
-        const p = players.get(conn.peer);
-        if (p) {
-          p.trait = data.trait || null;
-          broadcast({ type: "trait", id: p.id, trait: p.trait }, conn);
-        }
       } else if (data.type === "kills") {
         const p = players.get(conn.peer);
         if (p) {
@@ -1974,6 +2119,7 @@
     if (dt > 0) tickCombatSim(dt);
 
     if (!localPlayer) return;
+    if (isInventoryModalOpen()) return;
     if (isMultiplayerMatch() && !isLocalPlayerAlive()) return;
     let dx = 0;
     let dy = 0;
@@ -2282,6 +2428,9 @@
       return;
     }
     if (!profile) profile = getDefaultProfile();
+    clearMovementKeys();
+    markTraitRollUnlockedIfEligible();
+    setInventoryTab("weapons");
     renderWeaponsModal();
     weaponsModalEl.classList.remove("hidden");
     weaponsModalEl.setAttribute("aria-hidden", "false");
@@ -2290,6 +2439,8 @@
   function closeWeaponsModal() {
     weaponsModalEl.classList.add("hidden");
     weaponsModalEl.setAttribute("aria-hidden", "true");
+    clearMovementKeys();
+    setLuckStatus("");
   }
 
   function openSettingsModal() {
@@ -2363,12 +2514,13 @@
     const tdefs = traitDefs();
     if (killsLabelEl) killsLabelEl.textContent = String(kills);
     if (traitLabelEl) traitLabelEl.textContent = t ? (tdefs[t]?.name || t) : "None";
+    if (luckLabelEl) luckLabelEl.textContent = `${getLuckMultiplier()}×`;
     if (btnRollWeapon) btnRollWeapon.disabled = !canRoll();
     if (btnRollTrait) {
       btnRollTrait.disabled = !canRoll() || !canRollTrait();
       btnRollTrait.textContent = testMode
         ? "Roll Trait (test)"
-        : hasInstantTraitUnlock()
+        : hasInstantTraitUnlock() || profile?.traitRollUnlocked
           ? "Roll Trait (unlocked)"
           : "Roll Trait (5 kills)";
     }
@@ -2376,6 +2528,40 @@
     else if (btnRollWeapon) btnRollWeapon.textContent = "Roll Weapon";
     renderBackpack();
     renderTraitList();
+    if (inventoryTab === "upgrades") renderLuckPanel();
+  }
+
+  function renderLuckPanel() {
+    if (!luckListEl) return;
+    if (!profile) profile = getDefaultProfile();
+    const current = getLuckMultiplier();
+    luckListEl.innerHTML = LUCK_TIERS.map((tier) => {
+      const owned = current >= tier.mult;
+      const isNext = !owned && LUCK_TIERS.find((t) => t.mult > current)?.mult === tier.mult;
+      const kills = getKillCount();
+      const canBuy = isNext && kills >= tier.cost && !testMode;
+      let btn = "";
+      if (owned) {
+        btn = `<span class="luck-owned">Owned</span>`;
+      } else if (isNext) {
+        btn = `<button type="button" class="btn btn-small btn-equip" data-buy-luck="${tier.mult}" ${canBuy ? "" : "disabled"}>Buy (${tier.cost} kills)</button>`;
+      } else {
+        btn = `<button type="button" class="btn btn-small" disabled>Locked</button>`;
+      }
+      return `<div class="bp-item">
+        <div class="bp-left">
+          <div class="bp-name">${tier.label}</div>
+          <div class="bp-meta">${tier.meta} · costs ${tier.cost} kills</div>
+        </div>
+        <div class="bp-actions">${btn}</div>
+      </div>`;
+    }).join("");
+    const luck = getLuckMultiplier();
+    if (luck > 1) {
+      setLuckStatus(`Permanent ${luck}× luck — weapons & traits: 1-in-N odds are ${luck}× better (e.g. 1-in-50 → 1-in-${Math.round(50 / luck)}).`, "success");
+    } else if (profile.traitRollUnlocked) {
+      setLuckStatus("Trait roll is permanently unlocked on this account.", "success");
+    }
   }
 
   function renderTraitList() {
@@ -2907,6 +3093,7 @@
         handleMessage(km);
         if (localPlayer && attackerId === localPlayer.id) {
           profile.kills = a.kills;
+          markTraitRollUnlockedIfEligible();
           persistProfile();
           renderWeaponsModal();
         }
@@ -3016,6 +3203,14 @@
   if (btnStartGame) btnStartGame.addEventListener("click", hostStartGame);
   if (btnVoteNext) btnVoteNext.addEventListener("click", voteNextGame);
   btnCopyUrl.addEventListener("click", () => copyText(shareUrlInput.value));
+  on(tabWeaponsEl, "click", () => setInventoryTab("weapons"));
+  on(tabLuckEl, "click", () => setInventoryTab("upgrades"));
+  on(luckListEl, "click", (e) => {
+    const t = e.target;
+    if (!(t instanceof HTMLElement)) return;
+    const mult = parseInt(t.getAttribute("data-buy-luck") || "", 10);
+    if (mult) buyLuckUpgrade(mult);
+  });
   btnWeapons.addEventListener("click", openWeaponsModal);
   btnSettings.addEventListener("click", openSettingsModal);
   btnCloseWeapons.addEventListener("click", closeWeaponsModal);
@@ -3113,11 +3308,17 @@
   });
 
   window.addEventListener("keydown", (e) => {
-    keys[e.key.toLowerCase()] = true;
-    if (e.key.toLowerCase() === "i" && !isTypingInField()) {
+    const key = e.key.toLowerCase();
+    const moveKeys = ["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"];
+    if (isInventoryModalOpen() && moveKeys.includes(key)) {
+      e.preventDefault();
+      return;
+    }
+    keys[key] = true;
+    if (key === "i" && !isTypingInField()) {
       interactAtAim();
     }
-    if (e.key.toLowerCase() === "q") {
+    if (key === "q") {
       const trait = localPlayer?.trait || profile?.trait;
       if (trait === "dash" && localPlayer) {
         const t = now();
@@ -3135,11 +3336,7 @@
         }
       }
     }
-    if (
-      ["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(
-        e.key.toLowerCase()
-      )
-    ) {
+    if (moveKeys.includes(key)) {
       e.preventDefault();
     }
   });

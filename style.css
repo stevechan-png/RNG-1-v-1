@@ -353,6 +353,38 @@ body {
   flex: 1;
 }
 
+.inventory-tabs {
+  display: flex;
+  gap: 0.35rem;
+  margin-bottom: 0.85rem;
+}
+
+.inventory-tab {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #cde;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.inventory-tab.active {
+  background: rgba(52, 152, 219, 0.35);
+  border-color: rgba(52, 152, 219, 0.65);
+  color: #fff;
+}
+
+.inventory-panel.hidden {
+  display: none;
+}
+
+.luck-owned {
+  color: #2ecc71;
+  font-weight: 700;
+}
+
 .hud .btn-small {
   margin-bottom: 0;
 }

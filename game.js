@@ -444,6 +444,7 @@
 
   function openSelfMenu() {
     if (!selfMenuEl || !localPlayer) return;
+    closePlayerMenu();
     if (selfMenuTitleEl) {
       selfMenuTitleEl.textContent = `P${localPlayer.slot + 1}: ${localPlayer.name}`;
     }
@@ -1132,27 +1133,17 @@
     adminHoldCanvasPos = null;
   }
 
-  function tryOpenPlayerInteractionAt(px, py) {
-    if (isClickOnLocalPlayer(px, py)) {
-      openSelfMenu();
-      return true;
-    }
-    const other = findOtherPlayerAt(px, py);
-    if (other && isP1()) {
-      openPlayerMenu(other);
-      return true;
-    }
-    return false;
-  }
-
   function openPlayerMenu(player) {
-    if (!isP1() || player.slot === 0) return;
+    if (!playerMenuEl || !isP1() || player.slot === 0) return;
+    closeSelfMenu();
     menuTargetPlayer = player;
-    playerMenuTitleEl.textContent = `P${player.slot + 1}: ${player.name}`;
-    kickReasonInput.value = "";
+    if (playerMenuTitleEl) {
+      playerMenuTitleEl.textContent = `P${player.slot + 1}: ${player.name}`;
+    }
+    if (kickReasonInput) kickReasonInput.value = "";
     playerMenuEl.classList.remove("hidden");
     playerMenuEl.setAttribute("aria-hidden", "false");
-    kickReasonInput.focus();
+    if (kickReasonInput) kickReasonInput.focus();
   }
 
   function closePlayerMenu() {
@@ -1210,6 +1201,39 @@
     };
   }
 
+  const INTERACT_RADIUS = 72;
+
+  function getPlayerForInteraction(id) {
+    if (!id) return null;
+    return players.get(id) || (localPlayer?.id === id ? localPlayer : null);
+  }
+
+  function hitTestPlayerForInteraction(px, py, p) {
+    if (!p) return false;
+    const half = PLAYER_SIZE / 2 + 12;
+    if (px >= p.x - half && px <= p.x + half && py >= p.y - half && py <= p.y + half) {
+      return true;
+    }
+    const labelY = p.y - half - 10;
+    if (px >= p.x - 70 && px <= p.x + 70 && py >= labelY - 24 && py <= labelY + 10) {
+      return true;
+    }
+    return Math.hypot(px - p.x, py - p.y) <= INTERACT_RADIUS;
+  }
+
+  function findNearestPlayerForInteraction(px, py) {
+    let best = null;
+    let bestD = INTERACT_RADIUS;
+    for (const p of allPlayers()) {
+      const d = Math.hypot(p.x - px, p.y - py);
+      if (d <= bestD) {
+        bestD = d;
+        best = p;
+      }
+    }
+    return best;
+  }
+
   function hitTestPlayer(px, py, p) {
     const half = PLAYER_SIZE / 2;
     if (
@@ -1232,17 +1256,141 @@
     return false;
   }
 
+  function isClickOnLocalPlayer(px, py) {
+    const me = getPlayerForInteraction(localPlayer?.id);
+    return !!(me && hitTestPlayerForInteraction(px, py, me));
+  }
+
   function findOtherPlayerAt(px, py) {
     const sorted = allPlayers().sort((a, b) => b.slot - a.slot);
     for (const p of sorted) {
       if (p.id === localPlayer?.id) continue;
-      if (hitTestPlayer(px, py, p)) return p;
+      if (hitTestPlayerForInteraction(px, py, p)) return p;
     }
     return null;
   }
 
-  function isClickOnLocalPlayer(px, py) {
-    return !!(localPlayer && hitTestPlayer(px, py, localPlayer));
+  function tryOpenPlayerInteractionAt(px, py) {
+    closeWeaponsModal();
+    closeSettingsModal();
+
+    if (isClickOnLocalPlayer(px, py)) {
+      openSelfMenu();
+      return true;
+    }
+
+    const other = findOtherPlayerAt(px, py);
+    if (other && isP1()) {
+      openPlayerMenu(other);
+      return true;
+    }
+
+    const nearest = findNearestPlayerForInteraction(px, py);
+    if (!nearest) {
+      setGameStatus("Click closer to a player to interact.", "error");
+      return false;
+    }
+    if (nearest.id === localPlayer?.id) {
+      openSelfMenu();
+      return true;
+    }
+    if (isP1()) {
+      openPlayerMenu(nearest);
+      return true;
+    }
+    setGameStatus("Only P1 can manage other players.", "error");
+    return false;
+  }
+
+  function interactAtAim() {
+    if (!isGameScreenActive() || !localPlayer || isBlockingModalOpen()) return;
+    tryOpenPlayerInteractionAt(lastAim.x, lastAim.y);
+  }
+
+  function setupPlayerInteraction() {
+    if (!canvas) return;
+
+    canvas.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      if (!isGameScreenActive() || !localPlayer || isBlockingModalOpen()) return;
+      const { x, y } = getCanvasCoords(e.clientX, e.clientY);
+      if (tryOpenPlayerInteractionAt(x, y)) return;
+      if (getEquippedTrait() === "teleport_jump" && tryTeleportJump(x, y)) return;
+    });
+
+    canvas.addEventListener("pointermove", (e) => {
+      if (!isGameScreenActive()) return;
+      lastAim = getCanvasCoords(e.clientX, e.clientY);
+      if (
+        adminHoldPos &&
+        Math.hypot(e.clientX - adminHoldPos.x, e.clientY - adminHoldPos.y) > 18
+      ) {
+        cancelAdminHold();
+      }
+    });
+
+    canvas.addEventListener("pointerdown", (e) => {
+      if (isBlockingModalOpen()) return;
+      if (!isGameScreenActive() || !localPlayer) return;
+      const { x, y } = getCanvasCoords(e.clientX, e.clientY);
+      lastAim = { x, y };
+      clickDownAt = now();
+      suppressNextAttack = false;
+
+      if (e.button === 2) return;
+
+      if (e.button === 0) {
+        cancelAdminHold();
+        adminHoldPos = { x: e.clientX, y: e.clientY };
+        adminHoldCanvasPos = { x, y };
+        adminHoldTimer = setTimeout(() => {
+          adminHoldTimer = null;
+          const c = adminHoldCanvasPos;
+          adminHoldPos = null;
+          adminHoldCanvasPos = null;
+          if (!c) return;
+          suppressNextAttack = true;
+          tryOpenPlayerInteractionAt(c.x, c.y);
+        }, 450);
+      }
+    });
+
+    canvas.addEventListener("pointerup", (e) => {
+      if (isBlockingModalOpen()) return;
+      cancelAdminHold();
+      if (suppressNextAttack) {
+        suppressNextAttack = false;
+        return;
+      }
+      if (!canAttack()) return;
+      const weapon = getEquippedWeapon();
+      if (!weapon) {
+        setGameStatus("No weapon equipped. Roll one first.", "error");
+        return;
+      }
+      const { x, y } = getCanvasCoords(e.clientX, e.clientY);
+      lastAim = { x, y };
+      if (localPlayer) {
+        const dx = x - localPlayer.x;
+        const dy = y - localPlayer.y;
+        const len = Math.hypot(dx, dy) || 1;
+        localPlayer.dirX = dx / len;
+        localPlayer.dirY = dy / len;
+        if (mode === "host") {
+          broadcast({ type: "face", id: localPlayer.id, dirX: localPlayer.dirX, dirY: localPlayer.dirY });
+        } else if (mode === "guest") {
+          sendToHost({ type: "face", dirX: localPlayer.dirX, dirY: localPlayer.dirY });
+        }
+      }
+      const heldMs = now() - (clickDownAt || now());
+      const isThrow = weapon === "dagger" && heldMs >= 350;
+      const cd = weaponCooldownMs(weapon, isThrow);
+      if (now() < attackCooldownUntil) return;
+      attackCooldownUntil = now() + cd;
+      performAttack({ weapon, aimX: x, aimY: y, throw: isThrow });
+    });
+
+    canvas.addEventListener("pointercancel", cancelAdminHold);
   }
 
   function updateP1Cursor() {
@@ -2782,6 +2930,8 @@
     return;
   }
 
+  setupPlayerInteraction();
+
   on(btnSolo, "click", () => {
     setStatus("");
     startSolo();
@@ -2848,7 +2998,7 @@
   settingsModalEl.addEventListener("click", (e) => {
     if (e.target === settingsModalEl) closeSettingsModal();
   });
-  backpackListEl.addEventListener("click", (e) => {
+  on(backpackListEl, "click", (e) => {
     const t = e.target;
     if (!(t instanceof HTMLElement)) return;
     const id = t.getAttribute("data-equip");
@@ -2868,24 +3018,12 @@
     }
   });
 
-  btnKick.addEventListener("click", () => {
+  on(btnKick, "click", () => {
     if (!menuTargetPlayer) return;
-    kickPlayer(menuTargetPlayer.id, kickReasonInput.value);
+    kickPlayer(menuTargetPlayer.id, kickReasonInput?.value || "");
   });
 
-  btnBan.addEventListener("click", () => {
-    if (!menuTargetPlayer) return;
-    const user = menuTargetPlayer.user;
-    if (!user) {
-      setGameStatus("That player has no account username to ban.", "error");
-      return;
-    }
-    banAccount(roomCode, user);
-    kickPlayer(menuTargetPlayer.id, "Banned");
-    setGameStatus(`Banned ${user} from this room`, "success");
-  });
-
-  btnBan.addEventListener("click", () => {
+  on(btnBan, "click", () => {
     if (!menuTargetPlayer) return;
     const user = menuTargetPlayer.user;
     if (!user) {
@@ -2897,9 +3035,9 @@
     setGameStatus(`Banned ${user} from this room`, "success");
   });
 
-  btnClosePlayerMenu.addEventListener("click", closePlayerMenu);
+  on(btnClosePlayerMenu, "click", closePlayerMenu);
 
-  playerMenuEl.addEventListener("click", (e) => {
+  on(playerMenuEl, "click", (e) => {
     if (e.target === playerMenuEl) closePlayerMenu();
   });
 
@@ -2925,93 +3063,16 @@
   });
   on(btnCloseSelfMenu, "click", closeSelfMenu);
 
-  btnKickedOk.addEventListener("click", () => {
+  on(btnKickedOk, "click", () => {
     hideKickedOverlay();
     showMenu();
   });
 
-  // Right-click: self menu, Teleport Jump, or P1 admin menu on another player
-  canvas.addEventListener("contextmenu", (e) => {
-    e.preventDefault();
-    if (!isGameScreenActive() || !localPlayer || isBlockingModalOpen()) return;
-    const { x, y } = getCanvasCoords(e.clientX, e.clientY);
-
-    if (tryOpenPlayerInteractionAt(x, y)) return;
-
-    if (getEquippedTrait() === "teleport_jump" && tryTeleportJump(x, y)) return;
-  });
-
-  canvas.addEventListener("mousemove", (e) => {
-    if (!isGameScreenActive()) return;
-    lastAim = getCanvasCoords(e.clientX, e.clientY);
-    if (
-      adminHoldPos &&
-      Math.hypot(e.clientX - adminHoldPos.x, e.clientY - adminHoldPos.y) > 8
-    ) {
-      cancelAdminHold();
-    }
-  });
-
-  // Combat: aim at click (mousedown/up for dagger long-throw)
-  canvas.addEventListener("mousedown", (e) => {
-    if (isBlockingModalOpen()) return;
-    if (!isGameScreenActive() || !localPlayer) return;
-    const { x, y } = getCanvasCoords(e.clientX, e.clientY);
-    lastAim = { x, y };
-    clickDownAt = now();
-
-    suppressNextAttack = false;
-    if (e.button === 0) {
-      cancelAdminHold();
-      adminHoldPos = { x: e.clientX, y: e.clientY };
-      adminHoldCanvasPos = { x, y };
-      adminHoldTimer = setTimeout(() => {
-        adminHoldTimer = null;
-        const c = adminHoldCanvasPos;
-        adminHoldPos = null;
-        adminHoldCanvasPos = null;
-        if (!c) return;
-        suppressNextAttack = true;
-        tryOpenPlayerInteractionAt(c.x, c.y);
-      }, 450);
-    }
-  });
-
-  canvas.addEventListener("mouseup", (e) => {
-    if (isBlockingModalOpen()) return;
-    cancelAdminHold();
-    if (suppressNextAttack) {
-      suppressNextAttack = false;
-      return;
-    }
-    if (!canAttack()) return;
-    const weapon = getEquippedWeapon();
-    if (!weapon) {
-      setGameStatus("No weapon equipped. Roll one first.", "error");
-      return;
-    }
-    const { x, y } = getCanvasCoords(e.clientX, e.clientY);
-    lastAim = { x, y };
-    // update facing for local render + sync
-    if (localPlayer) {
-      const dx = x - localPlayer.x;
-      const dy = y - localPlayer.y;
-      const len = Math.hypot(dx, dy) || 1;
-      localPlayer.dirX = dx / len;
-      localPlayer.dirY = dy / len;
-      if (mode === "host") broadcast({ type: "face", id: localPlayer.id, dirX: localPlayer.dirX, dirY: localPlayer.dirY });
-      else if (mode === "guest") sendToHost({ type: "face", dirX: localPlayer.dirX, dirY: localPlayer.dirY });
-    }
-    const heldMs = now() - (clickDownAt || now());
-    const isThrow = weapon === "dagger" && heldMs >= 350;
-    const cd = weaponCooldownMs(weapon, isThrow);
-    if (now() < attackCooldownUntil) return;
-    attackCooldownUntil = now() + cd;
-    performAttack({ weapon, aimX: x, aimY: y, throw: isThrow });
-  });
-
   window.addEventListener("keydown", (e) => {
     keys[e.key.toLowerCase()] = true;
+    if (e.key.toLowerCase() === "i" && !isTypingInField()) {
+      interactAtAim();
+    }
     if (e.key.toLowerCase() === "q") {
       const trait = localPlayer?.trait || profile?.trait;
       if (trait === "dash" && localPlayer) {

@@ -25,6 +25,8 @@
   const ROLLING_MS = 20000;
   const DEAD_ALPHA = 0.15;
   const TELEPORT_COOLDOWN_MS = 20000;
+  const MAX_GAMES_IN_ROW = 20;
+  const COOLDOWN_3C_MS = 5 * 60 * 1000;
 
   const menuEl = document.getElementById("menu");
   const gameEl = document.getElementById("game");
@@ -79,6 +81,7 @@
   const winOverlayEl = document.getElementById("winOverlay");
   const winMessageEl = document.getElementById("winMessage");
   const voteStatusEl = document.getElementById("voteStatus");
+  const voteHelpTextEl = document.getElementById("voteHelpText");
   const btnVoteNext = document.getElementById("btnVoteNext");
   const rollOverlayEl = document.getElementById("rollOverlay");
   const rollCardInnerEl = document.getElementById("rollCardInner");
@@ -123,6 +126,7 @@
 
   let adminHoldTimer = null;
   let adminHoldPos = null;
+  let adminHoldCanvasPos = null;
   let suppressNextAttack = false;
   let dashCooldownUntil = 0;
   let teleportCooldownUntil = 0;
@@ -132,6 +136,9 @@
   let winnerId = null;
   let nextGameVotes = new Set();
   let hasVotedNext = false;
+  let roomGameNumber = 0;
+  let sessionCooldownUntil = 0;
+  let lastMatchUiTick = 0;
 
   // local account persistence (per device)
   const LS_ACCOUNTS = "bg_accounts_v1";
@@ -139,6 +146,7 @@
   const LS_ROOM_BANS = "bg_room_bans_v1"; // host-side only
   const LS_TESTER_CODE = "bg_tester_code_v1";
   const LS_TESTER_TRAIT = "bg_tester_trait_v1";
+  const LS_3C_COOLDOWN = "bg_3c_cooldown_until";
   const TESTER_CODE = "tester";
   let currentUser = null;
   let profile = null; // { inventory: string[], equipped: string|null, kills:number, trait:string|null }
@@ -212,9 +220,57 @@
   }
 
   function refreshMultiplayerButtons(busy) {
-    const blockMp = testMode;
+    const blockMp = testMode || is3cOnCooldown();
     if (btnJoin) btnJoin.disabled = busy || blockMp;
     if (btnCreate) btnCreate.disabled = busy || blockMp;
+  }
+
+  function load3cCooldown() {
+    try {
+      const until = parseInt(localStorage.getItem(LS_3C_COOLDOWN) || "0", 10);
+      sessionCooldownUntil = until > Date.now() ? until : 0;
+      if (!sessionCooldownUntil) localStorage.removeItem(LS_3C_COOLDOWN);
+    } catch {
+      sessionCooldownUntil = 0;
+    }
+    refreshMultiplayerButtons(false);
+  }
+
+  function is3cOnCooldown() {
+    return sessionCooldownUntil > Date.now();
+  }
+
+  function get3cCooldownRemainingMs() {
+    return Math.max(0, sessionCooldownUntil - Date.now());
+  }
+
+  function format3cCooldown(ms) {
+    const totalSec = Math.ceil(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
+
+  function get3cCooldownMessage() {
+    return `You use too much 3C, rest for ${format3cCooldown(get3cCooldownRemainingMs())}.`;
+  }
+
+  function apply3cCooldown(until) {
+    sessionCooldownUntil = until;
+    try {
+      localStorage.setItem(LS_3C_COOLDOWN, String(until));
+    } catch (_) {}
+    refreshMultiplayerButtons(false);
+  }
+
+  function clear3cCooldownIfExpired() {
+    if (sessionCooldownUntil && sessionCooldownUntil <= Date.now()) {
+      sessionCooldownUntil = 0;
+      try {
+        localStorage.removeItem(LS_3C_COOLDOWN);
+      } catch (_) {}
+      refreshMultiplayerButtons(false);
+    }
   }
 
   function setBusy(busy) {
@@ -664,6 +720,7 @@
     phaseEndsAt = 0;
     roomLocked = false;
     winnerId = null;
+    roomGameNumber = 0;
     nextGameVotes = new Set();
     hasVotedNext = false;
     if (slainFeedEl) {
@@ -681,6 +738,8 @@
       roomLocked,
       winnerId,
       votes: Array.from(nextGameVotes),
+      roomGameNumber,
+      sessionCooldownUntil,
     };
   }
 
@@ -690,8 +749,12 @@
     phaseEndsAt = ms.phaseEndsAt || 0;
     roomLocked = !!ms.roomLocked;
     winnerId = ms.winnerId || null;
+    if (typeof ms.roomGameNumber === "number") roomGameNumber = ms.roomGameNumber;
+    if (typeof ms.sessionCooldownUntil === "number" && ms.sessionCooldownUntil > Date.now()) {
+      apply3cCooldown(ms.sessionCooldownUntil);
+    }
     nextGameVotes = new Set(ms.votes || []);
-    if (localPlayer && nextGameVotes.has(localPlayer.id)) hasVotedNext = true;
+    hasVotedNext = localPlayer ? nextGameVotes.has(localPlayer.id) : false;
     updateMatchUI();
     syncLoadoutToHostIfAllowed();
   }
@@ -741,10 +804,28 @@
   }
 
   function updateVoteStatusUI() {
-    if (!voteStatusEl || matchPhase !== "ended") return;
+    clear3cCooldownIfExpired();
+    if (!voteStatusEl) return;
+    if (is3cOnCooldown()) {
+      voteStatusEl.textContent = get3cCooldownMessage();
+      if (voteHelpTextEl) voteHelpTextEl.textContent = "Take a 5 minute break before playing again.";
+      if (btnVoteNext) btnVoteNext.disabled = true;
+      return;
+    }
+    if (matchPhase !== "ended") return;
     const total = allPlayers().length;
     const votes = nextGameVotes.size;
-    voteStatusEl.textContent = `Votes: ${votes} / ${total} (all must vote yes)`;
+    const gameLabel =
+      roomGameNumber > 0 ? `Game ${roomGameNumber}/${MAX_GAMES_IN_ROW} · ` : "";
+    voteStatusEl.textContent = `${gameLabel}Votes: ${votes} / ${total} (all must vote yes)`;
+    if (voteHelpTextEl) {
+      if (roomGameNumber >= MAX_GAMES_IN_ROW) {
+        voteHelpTextEl.textContent =
+          "This was the last game in this streak. Voting yes starts a 5 minute rest.";
+      } else {
+        voteHelpTextEl.textContent = "Vote to play the next game (everyone must vote yes).";
+      }
+    }
     if (btnVoteNext) btnVoteNext.disabled = hasVotedNext;
   }
 
@@ -764,7 +845,8 @@
       setGameStatus("Waiting for host to start…", "");
     } else if (matchPhase === "rolling") {
       const left = Math.max(0, Math.ceil((phaseEndsAt - now()) / 1000));
-      setGameStatus(`Rolling phase: ${left}s (roll only, no attacks)`, "");
+      const gn = roomGameNumber > 0 ? `Game ${roomGameNumber}/${MAX_GAMES_IN_ROW} · ` : "";
+      setGameStatus(`${gn}Rolling phase: ${left}s (roll only, no attacks)`, "");
     } else if (matchPhase === "fighting") {
       setGameStatus("Fight!", "success");
     } else if (!isLocalPlayerAlive() && isMultiplayerMatch()) {
@@ -799,6 +881,11 @@
 
   function hostStartGame() {
     if (mode !== "host" || !isP1()) return;
+    if (is3cOnCooldown()) {
+      setGameStatus(get3cCooldownMessage(), "error");
+      return;
+    }
+    roomGameNumber = 1;
     matchPhase = "rolling";
     roomLocked = true;
     phaseEndsAt = now() + ROLLING_MS;
@@ -837,8 +924,27 @@
     }
   }
 
+  function hostTrigger3cCooldown() {
+    const until = Date.now() + COOLDOWN_3C_MS;
+    apply3cCooldown(until);
+    matchPhase = "ended";
+    nextGameVotes = new Set();
+    hasVotedNext = false;
+    broadcast({ type: "sessionCooldown", until });
+    broadcastMatchState();
+    updateMatchUI();
+    setGameStatus("You use too much 3C, rest for 5 minutes.", "error");
+  }
+
   function hostResetForNextGame() {
     if (mode !== "host") return;
+    if (is3cOnCooldown()) return;
+    const nextGame = roomGameNumber + 1;
+    if (nextGame > MAX_GAMES_IN_ROW) {
+      hostTrigger3cCooldown();
+      return;
+    }
+    roomGameNumber = nextGame;
     matchPhase = "rolling";
     phaseEndsAt = now() + ROLLING_MS;
     winnerId = null;
@@ -1017,6 +1123,28 @@
       .replace(/"/g, "&quot;");
   }
 
+  function cancelAdminHold() {
+    if (adminHoldTimer) {
+      clearTimeout(adminHoldTimer);
+      adminHoldTimer = null;
+    }
+    adminHoldPos = null;
+    adminHoldCanvasPos = null;
+  }
+
+  function tryOpenPlayerInteractionAt(px, py) {
+    if (isClickOnLocalPlayer(px, py)) {
+      openSelfMenu();
+      return true;
+    }
+    const other = findOtherPlayerAt(px, py);
+    if (other && isP1()) {
+      openPlayerMenu(other);
+      return true;
+    }
+    return false;
+  }
+
   function openPlayerMenu(player) {
     if (!isP1() || player.slot === 0) return;
     menuTargetPlayer = player;
@@ -1036,9 +1164,11 @@
 
   function isBlockingModalOpen() {
     if (kickedOverlayEl && !kickedOverlayEl.classList.contains("hidden")) return true;
+    if (winOverlayEl && !winOverlayEl.classList.contains("hidden")) return true;
     if (playerMenuEl && !playerMenuEl.classList.contains("hidden")) return true;
     if (selfMenuEl && !selfMenuEl.classList.contains("hidden")) return true;
     if (weaponsModalEl && !weaponsModalEl.classList.contains("hidden")) return true;
+    if (settingsModalEl && !settingsModalEl.classList.contains("hidden")) return true;
     if (rollOverlayEl && !rollOverlayEl.classList.contains("hidden")) return true;
     return false;
   }
@@ -1102,13 +1232,17 @@
     return false;
   }
 
-  function findClickedPlayer(px, py) {
+  function findOtherPlayerAt(px, py) {
     const sorted = allPlayers().sort((a, b) => b.slot - a.slot);
     for (const p of sorted) {
       if (p.id === localPlayer?.id) continue;
       if (hitTestPlayer(px, py, p)) return p;
     }
     return null;
+  }
+
+  function isClickOnLocalPlayer(px, py) {
+    return !!(localPlayer && hitTestPlayer(px, py, localPlayer));
   }
 
   function updateP1Cursor() {
@@ -1203,6 +1337,16 @@
         applyMatchState(msg.match);
         projectiles = [];
         activeLasers = [];
+        if (slainFeedEl) {
+          slainFeedEl.innerHTML = "";
+          slainFeedEl.classList.add("hidden");
+        }
+        hideWinOverlay();
+        syncLoadoutToHostIfAllowed();
+        break;
+      case "sessionCooldown":
+        if (typeof msg.until === "number") apply3cCooldown(msg.until);
+        updateVoteStatusUI();
         break;
       case "laserStart":
         activeLasers.push({ ...msg.beam });
@@ -1623,7 +1767,22 @@
     return true;
   }
 
+  function tickMatchSystems() {
+    clear3cCooldownIfExpired();
+    if (mode === "host") hostTickMatchPhase();
+    const t = now();
+    if (
+      isMultiplayerMatch() &&
+      (matchPhase === "rolling" || matchPhase === "ended" || is3cOnCooldown()) &&
+      t - lastMatchUiTick > 250
+    ) {
+      lastMatchUiTick = t;
+      updateMatchUI();
+    }
+  }
+
   function update() {
+    tickMatchSystems();
     if (!localPlayer) return;
     if (isMultiplayerMatch() && !isLocalPlayerAlive()) return;
     let dx = 0;
@@ -1782,6 +1941,9 @@
     if (testMode) {
       throw new Error("Test mode is solo only. Exit test mode to create a room.");
     }
+    if (is3cOnCooldown()) {
+      throw new Error(get3cCooldownMessage());
+    }
     if (attempt > 8) {
       throw new Error("Could not create a room. Try again.");
     }
@@ -1845,6 +2007,9 @@
     if (testMode) {
       throw new Error("Test mode is solo only. Exit test mode to join a room.");
     }
+    if (is3cOnCooldown()) {
+      throw new Error(get3cCooldownMessage());
+    }
     destroyPeer();
     mode = "guest";
     roomCode = code;
@@ -1905,6 +2070,10 @@
 
   function voteNextGame() {
     if (matchPhase !== "ended" || hasVotedNext || !localPlayer) return;
+    if (is3cOnCooldown()) {
+      setGameStatus(get3cCooldownMessage(), "error");
+      return;
+    }
     hasVotedNext = true;
     if (mode === "host") {
       nextGameVotes.add(localPlayer.id);
@@ -2764,67 +2933,58 @@
   // Right-click: self menu, Teleport Jump, or P1 admin menu on another player
   canvas.addEventListener("contextmenu", (e) => {
     e.preventDefault();
-    if (!isGameScreenActive() || !localPlayer) return;
+    if (!isGameScreenActive() || !localPlayer || isBlockingModalOpen()) return;
     const { x, y } = getCanvasCoords(e.clientX, e.clientY);
-    const target = findClickedPlayer(x, y);
 
-    if (target && target.id === localPlayer.id) {
-      openSelfMenu();
-      return;
-    }
+    if (tryOpenPlayerInteractionAt(x, y)) return;
 
-    if (getEquippedTrait() === "teleport_jump") {
-      const teleportTarget = !target ? { x, y } : null;
-      if (teleportTarget && tryTeleportJump(teleportTarget.x, teleportTarget.y)) return;
-    }
-
-    if (!isP1()) return;
-    if (target && target.id !== localPlayer.id) openPlayerMenu(target);
+    if (getEquippedTrait() === "teleport_jump" && tryTeleportJump(x, y)) return;
   });
 
   canvas.addEventListener("mousemove", (e) => {
     if (!isGameScreenActive()) return;
     lastAim = getCanvasCoords(e.clientX, e.clientY);
+    if (
+      adminHoldPos &&
+      Math.hypot(e.clientX - adminHoldPos.x, e.clientY - adminHoldPos.y) > 8
+    ) {
+      cancelAdminHold();
+    }
   });
 
   // Combat: aim at click (mousedown/up for dagger long-throw)
   canvas.addEventListener("mousedown", (e) => {
-    if (!canAttack()) return;
     if (isBlockingModalOpen()) return;
+    if (!isGameScreenActive() || !localPlayer) return;
     const { x, y } = getCanvasCoords(e.clientX, e.clientY);
     lastAim = { x, y };
     clickDownAt = now();
 
-    // P1 long-press to open admin menu (left click hold)
     suppressNextAttack = false;
-    if (isP1() && e.button === 0) {
+    if (e.button === 0) {
+      cancelAdminHold();
       adminHoldPos = { x: e.clientX, y: e.clientY };
-      if (adminHoldTimer) clearTimeout(adminHoldTimer);
+      adminHoldCanvasPos = { x, y };
       adminHoldTimer = setTimeout(() => {
-        const moved =
-          !adminHoldPos ||
-          Math.hypot(e.clientX - adminHoldPos.x, e.clientY - adminHoldPos.y) > 6;
-        if (moved) return;
-        const c = getCanvasCoords(e.clientX, e.clientY);
-        const target = findClickedPlayer(c.x, c.y);
-        if (target) {
-          suppressNextAttack = true;
-          openPlayerMenu(target);
-        }
+        adminHoldTimer = null;
+        const c = adminHoldCanvasPos;
+        adminHoldPos = null;
+        adminHoldCanvasPos = null;
+        if (!c) return;
+        suppressNextAttack = true;
+        tryOpenPlayerInteractionAt(c.x, c.y);
       }, 450);
     }
   });
 
   canvas.addEventListener("mouseup", (e) => {
-    if (!canAttack()) return;
-    if (adminHoldTimer) {
-      clearTimeout(adminHoldTimer);
-      adminHoldTimer = null;
-    }
+    if (isBlockingModalOpen()) return;
+    cancelAdminHold();
     if (suppressNextAttack) {
       suppressNextAttack = false;
       return;
     }
+    if (!canAttack()) return;
     const weapon = getEquippedWeapon();
     if (!weapon) {
       setGameStatus("No weapon equipped. Roll one first.", "error");
@@ -2890,6 +3050,7 @@
   }
 
   // Account boot
+  load3cCooldown();
   loadTesterPrefs();
   try {
     const remembered = localStorage.getItem(LS_CURRENT);

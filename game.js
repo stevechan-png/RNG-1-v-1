@@ -63,6 +63,7 @@
   const panelWeaponsEl = document.getElementById("panelWeapons");
   const panelLuckEl = document.getElementById("panelLuck");
   const luckListEl = document.getElementById("luckList");
+  const killBonusListEl = document.getElementById("killBonusList");
   const luckStatusEl = document.getElementById("luckStatus");
   const settingsModalEl = document.getElementById("settingsModal");
   const redeemCodeEl = document.getElementById("redeemCode");
@@ -167,6 +168,12 @@
     { mult: 2, cost: 10, label: "2× Luck", meta: "Permanent — better odds on weapons & traits; 1-in-2 items drop off the table (knife, dash)" },
     { mult: 3, cost: 20, label: "3× Luck", meta: "Permanent — odds ÷3 (1-in-50 → 1-in-17) for weapons & traits" },
     { mult: 4, cost: 45, label: "4× Luck", meta: "Permanent — odds ÷4 (1-in-50 → 1-in-12) for weapons & traits" },
+  ];
+
+  const KILL_BONUS_TIERS = [
+    { bonus: 1, cost: 10, label: "+1 Kill", meta: "Permanent — earn 2 kills per elimination (best tier only)" },
+    { bonus: 2, cost: 25, label: "+2 Kills", meta: "Permanent — earn 3 kills per elimination" },
+    { bonus: 3, cost: 50, label: "+3 Kills", meta: "Permanent — earn 4 kills per elimination" },
   ];
 
   function getPlayerName() {
@@ -551,6 +558,7 @@
       traitInventory: Object.keys(traitDefs()),
       equippedTrait: null,
       luckMultiplier: 4,
+      killBonus: 3,
       traitRollUnlocked: true,
     });
   }
@@ -647,6 +655,58 @@
     setGameStatus(`Permanent luck boost: ${targetMult}×`, "success");
   }
 
+  function getKillBonus() {
+    if (!profile) return 0;
+    const bonus = profile.killBonus || 0;
+    return Math.max(0, Math.min(3, bonus));
+  }
+
+  function getKillBonusForPlayer(player) {
+    if (!player) return 0;
+    if (localPlayer && player.id === localPlayer.id && profile) return getKillBonus();
+    return typeof player.killBonus === "number" ? Math.max(0, Math.min(3, player.killBonus)) : 0;
+  }
+
+  function killsPerElimination(player) {
+    return 1 + getKillBonusForPlayer(player);
+  }
+
+  function syncKillBonusToMatch() {
+    const bonus = getKillBonus();
+    if (localPlayer) localPlayer.killBonus = bonus;
+    if (mode === "guest") sendToHost({ type: "killBonus", killBonus: bonus });
+  }
+
+  function buyKillBonusUpgrade(targetBonus) {
+    if (!profile) profile = getDefaultProfile();
+    if (testMode) {
+      setLuckStatus("Kill bonus purchases don't save in test mode.", "error");
+      return;
+    }
+    const tier = KILL_BONUS_TIERS.find((t) => t.bonus === targetBonus);
+    if (!tier) return;
+    const current = getKillBonus();
+    if (current >= targetBonus) {
+      setLuckStatus(`You already have +${current} kill bonus.`, "error");
+      return;
+    }
+    const nextTier = KILL_BONUS_TIERS.find((t) => t.bonus > current);
+    if (!nextTier || nextTier.bonus !== targetBonus) {
+      setLuckStatus("Buy kill bonus in order: +1, then +2, then +3.", "error");
+      return;
+    }
+    if (!spendKills(tier.cost)) {
+      setLuckStatus(`Need ${tier.cost} kills (you have ${getKillCount()}).`, "error");
+      return;
+    }
+    profile.killBonus = targetBonus;
+    persistProfile();
+    syncKillBonusToMatch();
+    renderWeaponsModal();
+    setLuckStatus(`Permanent +${targetBonus} kill bonus unlocked!`, "success");
+    setGameStatus(`Kill bonus: +${targetBonus} per elimination`, "success");
+  }
+
   function setLuckStatus(msg, type) {
     if (!luckStatusEl) return;
     luckStatusEl.textContent = msg || "";
@@ -661,7 +721,7 @@
     if (panelLuckEl) panelLuckEl.classList.toggle("hidden", inventoryTab !== "upgrades");
     if (inventoryTab === "upgrades") {
       clearMovementKeys();
-      renderLuckPanel();
+      renderUpgradesPanel();
     }
   }
 
@@ -690,6 +750,7 @@
       traitInventory: [],
       equippedTrait: null,
       luckMultiplier: 1,
+      killBonus: 0,
       traitRollUnlocked: false,
     };
   }
@@ -702,6 +763,7 @@
     }
     if (!prof.equippedTrait && prof.trait) prof.equippedTrait = prof.trait;
     if (typeof prof.luckMultiplier !== "number") prof.luckMultiplier = 1;
+    if (typeof prof.killBonus !== "number") prof.killBonus = 0;
     if (typeof prof.traitRollUnlocked !== "boolean") {
       prof.traitRollUnlocked = getKillCountFromProfile(prof) >= 5;
     }
@@ -1616,7 +1678,7 @@
   function applyState(list, selfId, match) {
     players.clear();
     for (const p of list) {
-      players.set(p.id, { dirX: 1, dirY: 0, weapon: null, hp: MAX_HP, trait: null, kills: 0, user: null, ...p });
+      players.set(p.id, { dirX: 1, dirY: 0, weapon: null, hp: MAX_HP, trait: null, kills: 0, killBonus: 0, user: null, ...p });
       if (p.id === selfId) localPlayer = players.get(p.id);
     }
     applyMatchState(match);
@@ -1636,7 +1698,7 @@
       case "matchReset":
         players.clear();
         for (const p of msg.players || []) {
-          players.set(p.id, { dirX: 1, dirY: 0, weapon: null, hp: MAX_HP, trait: null, kills: 0, user: null, ...p });
+          players.set(p.id, { dirX: 1, dirY: 0, weapon: null, hp: MAX_HP, trait: null, kills: 0, killBonus: 0, user: null, ...p });
           if (localPlayer && p.id === localPlayer.id) localPlayer = players.get(p.id);
         }
         applyMatchState(msg.match);
@@ -1767,6 +1829,7 @@
           weapon: null,
           trait: (data.trait || null),
           kills: typeof data.kills === "number" ? data.kills : 0,
+          killBonus: typeof data.killBonus === "number" ? Math.max(0, Math.min(3, data.killBonus)) : 0,
           user: guestUser || null,
         };
         players.set(player.id, player);
@@ -1833,6 +1896,11 @@
         if (!p || !isPlayerAlive(p)) return;
         p.trait = data.trait || null;
         broadcast({ type: "trait", id: p.id, trait: p.trait }, conn);
+      } else if (data.type === "killBonus") {
+        const p = players.get(conn.peer);
+        if (p) {
+          p.killBonus = typeof data.killBonus === "number" ? Math.max(0, Math.min(3, data.killBonus)) : 0;
+        }
       } else if (data.type === "kills") {
         const p = players.get(conn.peer);
         if (p) {
@@ -2204,6 +2272,7 @@
       weapon: profile?.equipped || null,
       trait: getEquippedTrait(),
       kills: profile?.kills || 0,
+      killBonus: getKillBonus(),
       user: currentUser || null,
     };
     players.clear();
@@ -2304,6 +2373,7 @@
         weapon: profile?.equipped || null,
         trait: profile?.trait || null,
         kills: profile?.kills || 0,
+        killBonus: getKillBonus(),
         user: currentUser || null,
       };
       players.clear();
@@ -2384,6 +2454,7 @@
       user: currentUser || null,
       trait: profile?.trait || null,
       kills: profile?.kills || 0,
+      killBonus: getKillBonus(),
     });
 
     await new Promise((resolve, reject) => {
@@ -2528,16 +2599,16 @@
     else if (btnRollWeapon) btnRollWeapon.textContent = "Roll Weapon";
     renderBackpack();
     renderTraitList();
-    if (inventoryTab === "upgrades") renderLuckPanel();
+    if (inventoryTab === "upgrades") renderUpgradesPanel();
   }
 
-  function renderLuckPanel() {
+  function renderUpgradesPanel() {
     if (!luckListEl) return;
     if (!profile) profile = getDefaultProfile();
-    const current = getLuckMultiplier();
+    const currentLuck = getLuckMultiplier();
     luckListEl.innerHTML = LUCK_TIERS.map((tier) => {
-      const owned = current >= tier.mult;
-      const isNext = !owned && LUCK_TIERS.find((t) => t.mult > current)?.mult === tier.mult;
+      const owned = currentLuck >= tier.mult;
+      const isNext = !owned && LUCK_TIERS.find((t) => t.mult > currentLuck)?.mult === tier.mult;
       const kills = getKillCount();
       const canBuy = isNext && kills >= tier.cost && !testMode;
       let btn = "";
@@ -2556,12 +2627,52 @@
         <div class="bp-actions">${btn}</div>
       </div>`;
     }).join("");
+
+    if (killBonusListEl) {
+      const currentBonus = getKillBonus();
+      killBonusListEl.innerHTML = KILL_BONUS_TIERS.map((tier) => {
+        const owned = currentBonus >= tier.bonus;
+        const isNext = !owned && KILL_BONUS_TIERS.find((t) => t.bonus > currentBonus)?.bonus === tier.bonus;
+        const kills = getKillCount();
+        const canBuy = isNext && kills >= tier.cost && !testMode;
+        let btn = "";
+        if (owned) {
+          btn = `<span class="luck-owned">Owned</span>`;
+        } else if (isNext) {
+          btn = `<button type="button" class="btn btn-small btn-equip" data-buy-kill-bonus="${tier.bonus}" ${canBuy ? "" : "disabled"}>Buy (${tier.cost} kills)</button>`;
+        } else {
+          btn = `<button type="button" class="btn btn-small" disabled>Locked</button>`;
+        }
+        return `<div class="bp-item">
+          <div class="bp-left">
+            <div class="bp-name">${tier.label}</div>
+            <div class="bp-meta">${tier.meta} · costs ${tier.cost} kills</div>
+          </div>
+          <div class="bp-actions">${btn}</div>
+        </div>`;
+      }).join("");
+    }
+
+    const statusParts = [];
     const luck = getLuckMultiplier();
     if (luck > 1) {
-      setLuckStatus(`Permanent ${luck}× luck — weapons & traits: 1-in-N odds are ${luck}× better (e.g. 1-in-50 → 1-in-${Math.round(50 / luck)}).`, "success");
+      statusParts.push(`${luck}× luck on weapon & trait rolls`);
+    }
+    const bonus = getKillBonus();
+    if (bonus > 0) {
+      statusParts.push(`+${bonus} kill bonus (${1 + bonus} per elimination)`);
+    }
+    if (statusParts.length > 0) {
+      setLuckStatus(`Active: ${statusParts.join(" · ")}. Only your best tier applies.`, "success");
     } else if (profile.traitRollUnlocked) {
       setLuckStatus("Trait roll is permanently unlocked on this account.", "success");
+    } else {
+      setLuckStatus("");
     }
+  }
+
+  function renderLuckPanel() {
+    renderUpgradesPanel();
   }
 
   function renderTraitList() {
@@ -3087,7 +3198,8 @@
       if (mode === "host" || mode === "solo") hostSlain(targetId, attackerId);
       const a = players.get(attackerId);
       if (a) {
-        a.kills = (typeof a.kills === "number" ? a.kills : 0) + 1;
+        const gained = killsPerElimination(a);
+        a.kills = (typeof a.kills === "number" ? a.kills : 0) + gained;
         const km = { type: "kills", id: attackerId, kills: a.kills };
         if (mode === "host") broadcast(km);
         handleMessage(km);
@@ -3210,6 +3322,12 @@
     if (!(t instanceof HTMLElement)) return;
     const mult = parseInt(t.getAttribute("data-buy-luck") || "", 10);
     if (mult) buyLuckUpgrade(mult);
+  });
+  on(killBonusListEl, "click", (e) => {
+    const t = e.target;
+    if (!(t instanceof HTMLElement)) return;
+    const bonus = parseInt(t.getAttribute("data-buy-kill-bonus") || "", 10);
+    if (bonus) buyKillBonusUpgrade(bonus);
   });
   btnWeapons.addEventListener("click", openWeaponsModal);
   btnSettings.addEventListener("click", openSettingsModal);

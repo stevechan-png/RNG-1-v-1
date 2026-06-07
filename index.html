@@ -130,6 +130,20 @@
   <div id="settingsModal" class="modal hidden" aria-hidden="true">
     <div class="modal-card">
       <h2>Settings</h2>
+      <div class="divider">Roll animations</div>
+      <label class="tester-switch">
+        <input type="checkbox" id="settingAnimations" checked />
+        <span class="tester-switch-ui" aria-hidden="true"></span>
+        <span class="tester-switch-text">Enable roll animations</span>
+      </label>
+      <label class="field">
+        <span>Rare roll animation rarity</span>
+        <div class="setting-rarity-row">
+          <input id="settingRareAnimMult" type="number" min="10" max="10000" step="10" value="50" />
+          <span class="setting-rarity-suffix">× your luck</span>
+        </div>
+      </label>
+      <p class="help-text">Special weapon roll cinematics play when the weapon is at least as rare as <strong>luck ×</strong> this value (default 50×). Range: 10×–10000×.</p>
       <div class="divider">Redeem Codes</div>
       <label class="field">
         <span>Code</span>
@@ -183,6 +197,10 @@
 
   <div id="rollOverlay" class="roll-overlay hidden" aria-hidden="true">
     <div class="roll-overlay-vignette"></div>
+    <div id="rollMagmaFx" class="roll-magma-fx hidden" aria-hidden="true">
+      <div class="roll-magma-black"></div>
+      <div id="rollMagmaFire" class="roll-magma-fire">🔥</div>
+    </div>
     <div class="roll-card-scene roll-pop-in">
       <div id="rollCardInner" class="roll-card-inner is-shuffling">
         <div class="roll-card-face">

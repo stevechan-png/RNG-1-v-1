@@ -17,6 +17,17 @@
   const TOS_SPEED = Math.round(BOW_SPEED * 1.3);
   const TOS_LIFE_SEC = 4;
   const SCYTHE_RANGE = 55 * 1.5;
+  const KATANA_RANGE = 55 * 2;
+  const POTION_THROW_SPEED = 300;
+  const POTION_MAX_DIST = SCYTHE_RANGE * 3;
+  const POTION_AOE_RADIUS = 48;
+  const HEART_HP = 10;
+  const BURN_HEARTS_PER_SEC = 4;
+  const BURN_DURATION_SEC = 2;
+  const POISON_DMG_PER_SEC = 5;
+  const POISON_DURATION_SEC = 10;
+  const SHOT_BOW_SPREAD = 14;
+  const MAGMA_FIRE_GROW_MS = 2500;
   const LASER_DURATION_SEC = 1;
   const LASER_TICK_SEC = 0.3;
   const LASER_DMG = 5;
@@ -98,6 +109,10 @@
   const rollFrontMetaEl = document.getElementById("rollFrontMeta");
   const rollRevealTextEl = document.getElementById("rollRevealText");
   const btnRollDone = document.getElementById("btnRollDone");
+  const rollMagmaFxEl = document.getElementById("rollMagmaFx");
+  const rollMagmaFireEl = document.getElementById("rollMagmaFire");
+  const settingAnimationsEl = document.getElementById("settingAnimations");
+  const settingRareAnimMultEl = document.getElementById("settingRareAnimMult");
   const accountLoggedOutEl = document.getElementById("accountLoggedOut");
   const accountLoggedInEl = document.getElementById("accountLoggedIn");
   const accUserEl = document.getElementById("accUser");
@@ -131,6 +146,8 @@
   let clickDownAt = 0;
   let lastAim = { x: WORLD_W / 2, y: WORLD_H / 2 };
   let rollAnimTimer = null;
+  let rollAnimInvuln = false;
+  let magmaFireTransitionHandler = null;
 
   let adminHoldTimer = null;
   let adminHoldPos = null;
@@ -154,11 +171,17 @@
   const LS_ROOM_BANS = "bg_room_bans_v1"; // host-side only
   const LS_TESTER_CODE = "bg_tester_code_v1";
   const LS_TESTER_TRAIT = "bg_tester_trait_v1";
+  const LS_SETTINGS = "bg_settings_v1";
+
+  const WEAPON_SPECIAL_ROLL_ANIM = {
+    magma_scythe: "magma",
+  };
   const LS_3C_COOLDOWN = "bg_3c_cooldown_until";
   const TESTER_CODE = "tester";
   let currentUser = null;
   let profile = null; // { inventory: string[], equipped: string|null, kills:number, trait:string|null }
   let testMode = false;
+  let testModeNextRollWeapon = null;
   let profileSnapshot = null;
   let testerTraitUnlock = false;
   let testerCodeRevealed = false;
@@ -180,11 +203,59 @@
     return (playerNameInput.value || "Player").trim().slice(0, 20) || "Player";
   }
 
+  function getSettings() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(LS_SETTINGS) || "{}") || {};
+      const mult = typeof raw.rareRollAnimMult === "number" ? raw.rareRollAnimMult : 50;
+      return {
+        animationsEnabled: raw.animationsEnabled !== false,
+        rareRollAnimMult: clamp(Math.round(mult), 10, 10000),
+      };
+    } catch {
+      return { animationsEnabled: true, rareRollAnimMult: 50 };
+    }
+  }
+
+  function saveSettings(partial) {
+    const next = { ...getSettings(), ...partial };
+    localStorage.setItem(LS_SETTINGS, JSON.stringify(next));
+  }
+
+  function syncSettingsUI() {
+    const s = getSettings();
+    if (settingAnimationsEl) settingAnimationsEl.checked = s.animationsEnabled;
+    if (settingRareAnimMultEl) settingRareAnimMultEl.value = String(s.rareRollAnimMult);
+  }
+
+  function getWeaponRollRarity(weaponId) {
+    const tier = WEAPON_ROLL_TIERS.find((t) => t[0] === weaponId);
+    return tier ? tier[1] : null;
+  }
+
+  function getRareRollAnimThreshold() {
+    return getLuckMultiplier() * getSettings().rareRollAnimMult;
+  }
+
+  function shouldPlaySpecialRollAnim(weaponId) {
+    if (!getSettings().animationsEnabled) return false;
+    if (!WEAPON_SPECIAL_ROLL_ANIM[weaponId]) return false;
+    const oneInN = getWeaponRollRarity(weaponId);
+    if (!oneInN) return false;
+    return oneInN >= getRareRollAnimThreshold();
+  }
+
+  function setRollInvuln(active) {
+    rollAnimInvuln = !!active;
+    if (localPlayer) localPlayer.rollInvuln = !!active;
+    if (mode === "guest") sendToHost({ type: "rollInvuln", active: !!active });
+  }
+
   function openSettingsModal() {
     if (isMultiplayerMatch() && !isLocalPlayerAlive()) {
       setGameStatus("You died — spectating only.", "error");
       return;
     }
+    syncSettingsUI();
     if (redeemStatusEl) {
       redeemStatusEl.textContent = "";
       redeemStatusEl.className = "status";
@@ -192,7 +263,7 @@
     if (redeemCodeEl) redeemCodeEl.value = "";
     settingsModalEl.classList.remove("hidden");
     settingsModalEl.setAttribute("aria-hidden", "false");
-    if (redeemCodeEl) redeemCodeEl.focus();
+    if (settingAnimationsEl) settingAnimationsEl.focus();
   }
 
   function closeSettingsModal() {
@@ -368,6 +439,31 @@
         name: "Reinforced Bow",
         meta: "Arrow 1.3× speed • 20 dmg • 1.0s cd • 1/140",
       },
+      katana: {
+        id: "katana",
+        name: "Katana",
+        meta: "Melee • 10 dmg • 2× knife range • 0.3s cd • 1/160",
+      },
+      poison_potion: {
+        id: "poison_potion",
+        name: "Poison Potion",
+        meta: "Throw 3× scythe range • poison AOE 5 dmg/s for 10s • 12s cd • 1/195",
+      },
+      healing_potion: {
+        id: "healing_potion",
+        name: "Healing Potion",
+        meta: "Throw 3× scythe range • AOE heals 30 HP on landing • 10s cd • 1/200",
+      },
+      shot_bow: {
+        id: "shot_bow",
+        name: "Shot-Bow",
+        meta: "3 arrows side-by-side • 14 dmg each • 3.0s cd • 1/240",
+      },
+      magma_scythe: {
+        id: "magma_scythe",
+        name: "Magma Scythe",
+        meta: "Melee • 10 dmg • burn 4♥/s for 2s • 0.8s cd • 1/300",
+      },
       tos_rpg: {
         id: "tos_rpg",
         name: "Terms of Service Launcher",
@@ -399,6 +495,11 @@
     ["scythe", 55],
     ["laser_launcher", 90],
     ["reinforced_bow", 140],
+    ["katana", 160],
+    ["poison_potion", 195],
+    ["healing_potion", 200],
+    ["shot_bow", 240],
+    ["magma_scythe", 300],
   ];
 
   const TRAIT_ROLL_TIERS = [
@@ -449,6 +550,26 @@
     const rest = 1 - cut;
     const inRest = rest > 0 ? (r - cut) / rest : 0;
     return inRest < 0.75 ? "bow" : "dagger";
+  }
+
+  function rollWeaponIdForRoll() {
+    if (testMode && testModeNextRollWeapon) {
+      const picked = testModeNextRollWeapon;
+      testModeNextRollWeapon = null;
+      renderWeaponsModal();
+      return picked;
+    }
+    return rollWeaponId();
+  }
+
+  function setTestModeRollWeaponPick(weaponId) {
+    if (!testMode) return;
+    const defs = weaponDefs();
+    if (!defs[weaponId]) return;
+    testModeNextRollWeapon = weaponId;
+    renderWeaponsModal();
+    setGameStatus("Roll weapon selected.", "success");
+    setStatus(`Roll weapon selected: ${defs[weaponId].name}`, "success");
   }
 
   function rollTraitId() {
@@ -586,6 +707,7 @@
   function exitTestMode() {
     if (!testMode) return;
     testMode = false;
+    testModeNextRollWeapon = null;
     profile = profileSnapshot
       ? cloneProfile(profileSnapshot)
       : currentUser
@@ -1116,6 +1238,7 @@
     activeLasers = [];
     for (const p of allPlayers()) {
       p.hp = MAX_HP;
+      clearPlayerEffects(p);
       broadcast({ type: "hp", id: p.id, hp: p.hp });
     }
     broadcastMatchState();
@@ -1174,6 +1297,7 @@
     activeLasers = [];
     for (const p of allPlayers()) {
       p.hp = MAX_HP;
+      clearPlayerEffects(p);
       p.x = 120 + p.slot * 40;
       p.y = WORLD_H / 2;
     }
@@ -1602,7 +1726,10 @@
         }
       }
       const heldMs = now() - (clickDownAt || now());
-      const isThrow = weapon === "dagger" && heldMs >= 350;
+      const isThrow =
+        (weapon === "dagger" && heldMs >= 350) ||
+        weapon === "poison_potion" ||
+        weapon === "healing_potion";
       const cd = weaponCooldownMs(weapon, isThrow);
       if (now() < attackCooldownUntil) return;
       attackCooldownUntil = now() + cd;
@@ -1743,6 +1870,13 @@
         break;
       case "hp":
         if (players.has(msg.id)) players.get(msg.id).hp = msg.hp;
+        break;
+      case "playerEffect":
+        if (players.has(msg.id)) {
+          const p = players.get(msg.id);
+          p.poison = msg.poison || null;
+          p.burn = msg.burn || null;
+        }
         break;
       case "equip":
         if (players.has(msg.id)) players.get(msg.id).weapon = msg.weapon;
@@ -1896,6 +2030,9 @@
         if (!p || !isPlayerAlive(p)) return;
         p.trait = data.trait || null;
         broadcast({ type: "trait", id: p.id, trait: p.trait }, conn);
+      } else if (data.type === "rollInvuln") {
+        const p = players.get(conn.peer);
+        if (p) p.rollInvuln = !!data.active;
       } else if (data.type === "killBonus") {
         const p = players.get(conn.peer);
         if (p) {
@@ -1984,6 +2121,7 @@
   function drawPlayer(p, isLocal) {
     ctx.save();
     let alpha = alphaForTrait(p.trait);
+    if (p.rollInvuln) alpha = 0.4;
     if (!isPlayerAlive(p)) alpha = DEAD_ALPHA;
     ctx.globalAlpha = alpha;
     const half = PLAYER_SIZE / 2;
@@ -2080,10 +2218,76 @@
         ctx.fillRect(-4, -6, 14, 12);
         ctx.fillStyle = "#e74c3c";
         ctx.fillRect(8, -2, 6, 4);
+      } else if (w === "katana") {
+        ctx.fillStyle = "#ecf0f1";
+        ctx.fillRect(0, -2, 24, 4);
+        ctx.fillStyle = "#2c3e50";
+        ctx.fillRect(-8, -4, 8, 8);
+        ctx.fillStyle = "#c0392b";
+        ctx.fillRect(20, -3, 4, 6);
+      } else if (w === "magma_scythe") {
+        ctx.strokeStyle = "#e67e22";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(6, 0, 16, 0.4, Math.PI * 1.35);
+        ctx.stroke();
+        ctx.fillStyle = "#922b21";
+        ctx.fillRect(-4, -2, 10, 4);
+      } else if (w === "shot_bow") {
+        ctx.strokeStyle = "#e74c3c";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(4, 0, 12, -1.1, 1.1);
+        ctx.stroke();
+        ctx.fillStyle = "#c0392b";
+        ctx.fillRect(-8, -4, 6, 8);
+      } else if (w === "poison_potion") {
+        ctx.fillStyle = "rgba(45, 90, 39, 0.85)";
+        ctx.beginPath();
+        ctx.arc(0, 2, 7, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#1a3d16";
+        ctx.fillRect(-3, -10, 6, 8);
+      } else if (w === "healing_potion") {
+        ctx.fillStyle = "rgba(231, 76, 60, 0.9)";
+        ctx.beginPath();
+        ctx.arc(0, 2, 7, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#922b21";
+        ctx.fillRect(-3, -10, 6, 8);
       }
       ctx.restore();
     }
+    drawStatusParticles(p);
     ctx.restore();
+  }
+
+  function drawStatusParticles(p) {
+    if (!p) return;
+    const t = now() / 1000;
+    const poisonActive = p.poison && p.poison.rem > 0;
+    const burnActive = p.burn && p.burn.rem > 0;
+    if (!poisonActive && !burnActive) return;
+    const count = 10;
+    for (let i = 0; i < count; i++) {
+      const ang = t * 2.4 + i * ((Math.PI * 2) / count);
+      const wobble = Math.sin(t * 4 + i * 1.7) * 5;
+      const r = 16 + wobble + (i % 3);
+      const px = p.x + Math.cos(ang) * r;
+      const py = p.y + Math.sin(ang) * r - 8;
+      if (poisonActive) {
+        ctx.fillStyle = `rgba(${30 + (i % 20)}, ${70 + (i % 30)}, ${25 + (i % 15)}, ${0.55 + (i % 3) * 0.12})`;
+        ctx.beginPath();
+        ctx.arc(px, py, 2.5 + (i % 2), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (burnActive) {
+        ctx.fillStyle = `rgba(255, ${120 + (i % 40)}, ${20 + (i % 30)}, ${0.6 + (i % 2) * 0.15})`;
+        ctx.beginPath();
+        ctx.arc(px - 4, py - 6, 2 + (i % 2), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
   }
 
   function sendMove(x, y) {
@@ -2132,6 +2336,7 @@
     if (mode !== "host" && mode !== "solo") return;
     stepProjectiles(dt);
     stepLasers(dt);
+    stepStatusEffects(dt);
     updateLocalLaserAim();
     if (mode === "host") {
       if (projectiles.length > 0) {
@@ -2185,6 +2390,7 @@
     }
     lastLoopTime = t;
     if (dt > 0) tickCombatSim(dt);
+    if (dt > 0 && mode === "guest") tickStatusVisuals(dt);
 
     if (!localPlayer) return;
     if (isInventoryModalOpen()) return;
@@ -2238,6 +2444,13 @@
         ctx.fillStyle = "#a67c52";
         ctx.fillRect(-14, -4, 5, 8);
         ctx.restore();
+      } else if (pr.kind === "poison_potion" || pr.kind === "healing_potion") {
+        ctx.fillStyle = pr.color || (pr.kind === "poison_potion" ? "#2d5a27" : "#e74c3c");
+        ctx.beginPath();
+        ctx.arc(pr.x, pr.y, pr.r || 9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = pr.kind === "poison_potion" ? "#1a3d16" : "#922b21";
+        ctx.fillRect(pr.x - 3, pr.y - 12, 6, 8);
       } else {
         ctx.fillStyle = pr.color || "#fff";
         ctx.beginPath();
@@ -2514,62 +2727,34 @@
     setLuckStatus("");
   }
 
-  function openSettingsModal() {
-    if (redeemStatusEl) {
-      redeemStatusEl.textContent = "";
-      redeemStatusEl.className = "status";
-    }
-    if (redeemCodeEl) redeemCodeEl.value = "";
-    settingsModalEl.classList.remove("hidden");
-    settingsModalEl.setAttribute("aria-hidden", "false");
-    if (redeemCodeEl) redeemCodeEl.focus();
-  }
-
-  function closeSettingsModal() {
-    settingsModalEl.classList.add("hidden");
-    settingsModalEl.setAttribute("aria-hidden", "true");
-  }
-
-  function setRedeemStatus(msg, type) {
-    if (!redeemStatusEl) return;
-    redeemStatusEl.textContent = msg || "";
-    redeemStatusEl.className = "status" + (type ? " " + type : "");
-  }
-
-  function redeemCode() {
-    const code = (redeemCodeEl?.value || "").trim();
-    if (code !== REDEEM_TOS_CODE) {
-      setRedeemStatus("Invalid code.", "error");
-      return;
-    }
-    if (!profile) profile = getDefaultProfile();
-    ensureWeaponInInventory("tos_rpg");
-    persistProfile();
-    setEquipped("tos_rpg");
-    setRedeemStatus("Unlocked: Terms of Service Launcher", "success");
-    setGameStatus("Unlocked: Terms of Service Launcher", "success");
-    renderWeaponsModal();
-  }
-
   function renderBackpack() {
     if (!backpackListEl) return;
     const defs = weaponDefs();
     const inv = profile?.inventory || [];
     if (inv.length === 0) {
-      backpackListEl.innerHTML = `<p class="help-text">No weapons yet. Click <strong>Roll Weapon</strong>.</p>`;
+      backpackListEl.innerHTML = testMode
+        ? `<p class="help-text">Test mode — right-click a weapon below to pick your next roll.</p>`
+        : `<p class="help-text">No weapons yet. Click <strong>Roll Weapon</strong>.</p>`;
       return;
     }
+    const pickHint =
+      testMode
+        ? `<p class="help-text">Test mode — right-click a weapon to pick your next roll.</p>`
+        : "";
     const equipped = profile?.equipped || null;
-    backpackListEl.innerHTML = inv
+    backpackListEl.innerHTML =
+      pickHint +
+      inv
       .map((id) => {
         const w = defs[id];
         const isEq = equipped === id;
+        const isPick = testMode && testModeNextRollWeapon === id;
         const btn = isEq
           ? `<button type="button" class="btn btn-small btn-equipped" disabled>Equipped</button>`
           : `<button type="button" class="btn btn-small btn-equip" data-equip="${id}">Equip</button>`;
-        return `<div class="bp-item">
+        return `<div class="bp-item${isPick ? " is-test-roll-pick" : ""}" data-weapon-id="${id}">
           <div class="bp-left">
-            <div class="bp-name">${w ? w.name : id}</div>
+            <div class="bp-name">${w ? w.name : id}${isPick ? " · next roll" : ""}</div>
             <div class="bp-meta">${w ? w.meta : ""}</div>
           </div>
           <div class="bp-actions">${btn}</div>
@@ -2712,6 +2897,11 @@
       scythe: { a: "#566573", b: "#1c2833", border: "#95a5a6", glow: "rgba(149, 165, 166, 0.85)" },
       laser_launcher: { a: "#1a5276", b: "#0b2f44", border: "#3498db", glow: "rgba(52, 152, 219, 0.9)" },
       reinforced_bow: { a: "#7d6608", b: "#423306", border: "#f39c12", glow: "rgba(243, 156, 18, 0.9)" },
+      katana: { a: "#566573", b: "#2c3e50", border: "#ecf0f1", glow: "rgba(236, 240, 241, 0.9)" },
+      poison_potion: { a: "#1e4620", b: "#0d2810", border: "#2ecc71", glow: "rgba(46, 204, 113, 0.85)" },
+      healing_potion: { a: "#922b21", b: "#641e16", border: "#e74c3c", glow: "rgba(231, 76, 60, 0.9)" },
+      shot_bow: { a: "#922b21", b: "#641e16", border: "#e74c3c", glow: "rgba(255, 140, 0, 0.9)" },
+      magma_scythe: { a: "#d35400", b: "#7e2e00", border: "#f39c12", glow: "rgba(230, 126, 34, 0.95)" },
       tos_rpg: { a: "#6c3483", b: "#2e1a36", border: "#9b59b6", glow: "rgba(155, 89, 182, 0.9)" },
     };
     return themes[id] || themes.knife;
@@ -2735,6 +2925,7 @@
   function stopRollAnimation() {
     if (rollAnimTimer) {
       clearInterval(rollAnimTimer);
+      clearTimeout(rollAnimTimer);
       rollAnimTimer = null;
     }
     setRollButtonsDisabled(false);
@@ -2747,8 +2938,96 @@
     if (scene) scene.classList.toggle("is-trait-star", isTrait);
   }
 
+  function clearMagmaFireListener() {
+    if (magmaFireTransitionHandler && rollMagmaFireEl) {
+      rollMagmaFireEl.removeEventListener("transitionend", magmaFireTransitionHandler);
+    }
+    magmaFireTransitionHandler = null;
+  }
+
+  function clearMagmaTimers() {
+    clearMagmaFireListener();
+  }
+
+  function hideMagmaFxInstant() {
+    clearMagmaTimers();
+    if (rollMagmaFxEl) {
+      rollMagmaFxEl.classList.add("hidden");
+      rollMagmaFxEl.setAttribute("aria-hidden", "true");
+    }
+  }
+
+  function resetMagmaFx() {
+    clearMagmaTimers();
+    if (rollMagmaFxEl) {
+      rollMagmaFxEl.classList.remove("is-active", "is-fire-grow");
+      rollMagmaFxEl.classList.add("hidden");
+      rollMagmaFxEl.setAttribute("aria-hidden", "true");
+    }
+    if (rollMagmaFireEl) rollMagmaFireEl.style.transform = "";
+    const scene = rollOverlayEl?.querySelector(".roll-card-scene");
+    if (scene) scene.classList.remove("is-hidden", "roll-pop-in-magma");
+  }
+
+  function runMagmaRevealSequence(finalId, finalDef, kind, onComplete) {
+    const scene = rollOverlayEl?.querySelector(".roll-card-scene");
+    if (rollRevealTextEl) rollRevealTextEl.classList.remove("is-visible");
+    if (btnRollDone) btnRollDone.classList.add("hidden");
+    if (scene) scene.classList.add("is-hidden");
+
+    if (!rollMagmaFxEl) {
+      revealRollCard(finalId, finalDef, kind);
+      onComplete(finalId);
+      return;
+    }
+
+    let finished = false;
+    let fireGrowStarted = false;
+
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      clearMagmaFireListener();
+      const sceneEl = rollOverlayEl?.querySelector(".roll-card-scene");
+      if (sceneEl) {
+        sceneEl.classList.remove("is-hidden", "roll-pop-in", "roll-pop-in-magma");
+        void sceneEl.offsetWidth;
+        sceneEl.classList.add("roll-pop-in-magma");
+      }
+      hideMagmaFxInstant();
+      revealRollCard(finalId, finalDef, kind, { fastPop: true });
+      onComplete(finalId);
+    };
+
+    rollMagmaFxEl.classList.remove("hidden");
+    rollMagmaFxEl.setAttribute("aria-hidden", "false");
+    rollMagmaFxEl.classList.remove("is-fire-grow");
+    if (rollMagmaFireEl) rollMagmaFireEl.style.transform = "";
+    void rollMagmaFxEl.offsetWidth;
+    rollMagmaFxEl.classList.add("is-active");
+
+    magmaFireTransitionHandler = (e) => {
+      if (!fireGrowStarted || e.target !== rollMagmaFireEl || e.propertyName !== "transform") return;
+      if (e.elapsedTime < MAGMA_FIRE_GROW_MS * 0.85) return;
+      finish();
+    };
+
+    setTimeout(() => {
+      if (finished) return;
+      fireGrowStarted = true;
+      if (rollMagmaFireEl) {
+        rollMagmaFireEl.addEventListener("transitionend", magmaFireTransitionHandler);
+      }
+      rollMagmaFxEl.classList.add("is-fire-grow");
+    }, 180);
+
+    setTimeout(finish, 180 + MAGMA_FIRE_GROW_MS + 200);
+  }
+
   function hideRollOverlay() {
     stopRollAnimation();
+    resetMagmaFx();
+    setRollInvuln(false);
     if (!rollOverlayEl) return;
     rollOverlayEl.classList.add("hidden");
     rollOverlayEl.setAttribute("aria-hidden", "true");
@@ -2784,6 +3063,7 @@
     }
     rollOverlayEl.classList.remove("hidden");
     rollOverlayEl.setAttribute("aria-hidden", "false");
+    setRollInvuln(true);
     setRollButtonsDisabled(true);
   }
 
@@ -2803,7 +3083,7 @@
     rollCardInnerEl.style.setProperty("--roll-glow", t.glow);
   }
 
-  function revealRollCard(finalId, def, kind) {
+  function revealRollCard(finalId, def, kind, opts) {
     const d = def || { name: finalId, meta: "" };
     applyRollCardTheme(finalId, kind);
     if (rollCardLabelEl) {
@@ -2815,6 +3095,11 @@
       rollCardInnerEl.classList.remove("is-shuffling");
       void rollCardInnerEl.offsetWidth;
       rollCardInnerEl.classList.add("is-revealed");
+      if (opts?.fastPop) {
+        rollCardInnerEl.classList.remove("is-revealed");
+        void rollCardInnerEl.offsetWidth;
+        rollCardInnerEl.classList.add("is-revealed");
+      }
     }
     if (rollRevealTextEl) {
       rollRevealTextEl.textContent = `You got ${d.name}!`;
@@ -2829,15 +3114,22 @@
 
   function runRollAnimation(opts) {
     const { shuffleOrder, getDef, rollFinal, onComplete, kind, rollingLabel } = opts;
-    if (!rollOverlayEl || !rollCardInnerEl) {
-      const finalId = rollFinal();
+    const finalId = rollFinal();
+    const finalDef = getDef(finalId);
+
+    if (!getSettings().animationsEnabled || !rollOverlayEl || !rollCardInnerEl) {
       onComplete(finalId);
       return;
     }
     if (rollAnimTimer) return;
 
+    const playMagma =
+      finalId === "magma_scythe" && shouldPlaySpecialRollAnim("magma_scythe");
+
     const shuffleMs = 2000;
+    const magmaTriggerAt = now() + shuffleMs * 0.9;
     const shuffleEnd = now() + shuffleMs;
+
     showRollOverlay(kind);
     setGameStatus(rollingLabel || "Rolling…", "");
 
@@ -2845,14 +3137,18 @@
     rollAnimTimer = setInterval(() => {
       const id = shuffleOrder[i % shuffleOrder.length];
       i++;
-      const preview = getDef(id);
-      setRollShufflePreview(id, preview, kind);
+      setRollShufflePreview(id, getDef(id), kind);
+
+      if (playMagma && now() >= magmaTriggerAt) {
+        clearInterval(rollAnimTimer);
+        rollAnimTimer = null;
+        runMagmaRevealSequence(finalId, finalDef, kind, onComplete);
+        return;
+      }
 
       if (now() >= shuffleEnd) {
         clearInterval(rollAnimTimer);
         rollAnimTimer = null;
-        const finalId = rollFinal();
-        const finalDef = getDef(finalId);
         revealRollCard(finalId, finalDef, kind);
         onComplete(finalId);
       }
@@ -2881,9 +3177,14 @@
         "scythe",
         "laser_launcher",
         "reinforced_bow",
+        "katana",
+        "poison_potion",
+        "healing_potion",
+        "shot_bow",
+        "magma_scythe",
       ],
       getDef: (id) => defs[id] || { name: id, meta: "" },
-      rollFinal: rollWeaponId,
+      rollFinal: rollWeaponIdForRoll,
       onComplete: (finalId) => {
         ensureWeaponInInventory(finalId);
         if (!profile.equipped) profile.equipped = finalId;
@@ -2931,9 +3232,14 @@
   function weaponCooldownMs(weaponId, isThrow) {
     if (weaponId === "knife") return 500;
     if (weaponId === "scythe") return 300;
+    if (weaponId === "katana") return 300;
+    if (weaponId === "magma_scythe") return 800;
     if (weaponId === "bow") return 1000;
     if (weaponId === "reinforced_bow") return 1000;
+    if (weaponId === "shot_bow") return 3000;
     if (weaponId === "dagger") return isThrow ? 1200 : 700;
+    if (weaponId === "poison_potion") return 12000;
+    if (weaponId === "healing_potion") return 10000;
     if (weaponId === "rpg") return 2000;
     if (weaponId === "laser_launcher") return 1500;
     if (weaponId === "tos_rpg") return 2000;
@@ -2942,16 +3248,19 @@
 
   function meleeRange(weaponId) {
     if (weaponId === "knife") return 55;
-    if (weaponId === "scythe") return SCYTHE_RANGE;
+    if (weaponId === "katana") return KATANA_RANGE;
+    if (weaponId === "scythe" || weaponId === "magma_scythe") return SCYTHE_RANGE;
     if (weaponId === "dagger") return 50;
     return 0;
   }
 
   function damageOf(weaponId) {
     if (weaponId === "knife") return 10;
-    if (weaponId === "scythe") return 10;
+    if (weaponId === "katana") return 10;
+    if (weaponId === "scythe" || weaponId === "magma_scythe") return 10;
     if (weaponId === "bow") return 8;
     if (weaponId === "reinforced_bow") return 20;
+    if (weaponId === "shot_bow") return 14;
     if (weaponId === "dagger") return 7;
     if (weaponId === "rpg") return 25;
     if (weaponId === "tos_rpg") return 35;
@@ -3092,60 +3401,200 @@
     for (const id of toRemove) removeLaser(id);
   }
 
-  function spawnDirectedProjectile(attackerId, weapon, ax, ay, ux, uy, dmg) {
-    const speed =
-      weapon === "bow"
+  function spawnDirectedProjectile(attackerId, weapon, ax, ay, ux, uy, dmg, spawnOffsetX, spawnOffsetY) {
+    const ox = spawnOffsetX || 0;
+    const oy = spawnOffsetY || 0;
+    const isPotion = weapon === "poison_potion" || weapon === "healing_potion";
+    const speed = isPotion
+      ? POTION_THROW_SPEED
+      : weapon === "bow"
         ? BOW_SPEED
         : weapon === "reinforced_bow"
           ? REINFORCED_BOW_SPEED
-          : weapon === "rpg"
-            ? RPG_SPEED
-            : weapon === "tos_rpg"
-              ? TOS_SPEED
-              : DAGGER_THROW_SPEED;
+          : weapon === "shot_bow"
+            ? BOW_SPEED
+            : weapon === "rpg"
+              ? RPG_SPEED
+              : weapon === "tos_rpg"
+                ? TOS_SPEED
+                : DAGGER_THROW_SPEED;
     const ang = Math.atan2(uy, ux);
     const half = PLAYER_SIZE / 2;
     const spawnDist = half + 22;
     const pid = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const infinite = weapon === "rpg";
+    const kind = isPotion
+      ? weapon
+      : weapon === "tos_rpg"
+        ? "tos_circle"
+        : weapon === "rpg"
+          ? "rpg_rocket"
+          : weapon === "bow" || weapon === "reinforced_bow" || weapon === "shot_bow"
+            ? "arrow"
+            : "dagger";
     spawnProjectile({
       pid,
       owner: attackerId,
-      x: ax + ux * spawnDist,
-      y: ay + uy * spawnDist,
+      x: ax + ox + ux * spawnDist,
+      y: ay + oy + uy * spawnDist,
       vx: ux * speed,
       vy: uy * speed,
-      r: weapon === "tos_rpg" ? 14 : weapon === "rpg" ? 10 : weapon === "bow" || weapon === "reinforced_bow" ? 8 : 7,
-      life:
-        weapon === "tos_rpg"
-          ? TOS_LIFE_SEC
-          : weapon === "rpg"
-            ? RPG_LIFE_SEC
-            : weapon === "bow" || weapon === "reinforced_bow"
-              ? BOW_LIFE_SEC
-              : DAGGER_THROW_LIFE_SEC,
+      r: isPotion ? 9 : weapon === "tos_rpg" ? 14 : weapon === "rpg" ? 10 : weapon === "bow" || weapon === "reinforced_bow" || weapon === "shot_bow" ? 8 : 7,
+      life: isPotion ? 4 : weapon === "tos_rpg" ? TOS_LIFE_SEC : weapon === "rpg" ? RPG_LIFE_SEC : weapon === "bow" || weapon === "reinforced_bow" || weapon === "shot_bow" ? BOW_LIFE_SEC : DAGGER_THROW_LIFE_SEC,
       dmg,
-      color:
-        weapon === "tos_rpg"
+      color: isPotion
+        ? weapon === "poison_potion"
+          ? "#2d5a27"
+          : "#e74c3c"
+        : weapon === "tos_rpg"
           ? "#9b59b6"
           : weapon === "rpg"
             ? "#e67e22"
-            : weapon === "reinforced_bow"
-              ? "#ffe4a8"
-              : weapon === "bow"
-                ? "#fff8e7"
-                : "#d1b36a",
-      kind:
-        weapon === "tos_rpg"
-          ? "tos_circle"
-          : weapon === "rpg"
-            ? "rpg_rocket"
-            : weapon === "bow" || weapon === "reinforced_bow"
-              ? "arrow"
-              : "dagger",
+            : weapon === "shot_bow"
+              ? "#ffb347"
+              : weapon === "reinforced_bow"
+                ? "#ffe4a8"
+                : weapon === "bow"
+                  ? "#fff8e7"
+                  : "#d1b36a",
+      kind,
       ang,
       infinite,
+      maxDist: isPotion ? POTION_MAX_DIST : null,
+      distTraveled: 0,
     });
+  }
+
+  function spawnShotBowVolley(attackerId, ax, ay, ux, uy) {
+    const perpX = -uy;
+    const perpY = ux;
+    for (let i = -1; i <= 1; i++) {
+      spawnDirectedProjectile(
+        attackerId,
+        "shot_bow",
+        ax,
+        ay,
+        ux,
+        uy,
+        14,
+        perpX * SHOT_BOW_SPREAD * i,
+        perpY * SHOT_BOW_SPREAD * i
+      );
+    }
+  }
+
+  function clearPlayerEffects(p) {
+    if (!p) return;
+    p.poison = null;
+    p.burn = null;
+  }
+
+  function broadcastPlayerEffect(id) {
+    if (mode !== "host") return;
+    const p = players.get(id);
+    if (!p) return;
+    broadcast({
+      type: "playerEffect",
+      id,
+      poison: p.poison ? { rem: p.poison.rem, dps: p.poison.dps } : null,
+      burn: p.burn ? { rem: p.burn.rem, dps: p.burn.dps } : null,
+    });
+  }
+
+  function applyPoisonToPlayer(playerId, sourceId) {
+    if (mode !== "host" && mode !== "solo") return;
+    const p = players.get(playerId);
+    if (!p || !isPlayerAlive(p)) return;
+    p.poison = {
+      rem: POISON_DURATION_SEC,
+      tickAcc: 0,
+      dps: POISON_DMG_PER_SEC,
+      sourceId: sourceId || null,
+    };
+    if (mode === "host") broadcastPlayerEffect(playerId);
+  }
+
+  function applyBurnToPlayer(playerId, sourceId) {
+    if (mode !== "host" && mode !== "solo") return;
+    const p = players.get(playerId);
+    if (!p || !isPlayerAlive(p)) return;
+    p.burn = {
+      rem: BURN_DURATION_SEC,
+      tickAcc: 0,
+      dps: BURN_HEARTS_PER_SEC * HEART_HP,
+      sourceId: sourceId || null,
+    };
+    if (mode === "host") broadcastPlayerEffect(playerId);
+  }
+
+  function stepStatusEffects(dt) {
+    if (mode !== "host" && mode !== "solo") return;
+    for (const p of allPlayers()) {
+      if (!isPlayerAlive(p)) continue;
+      if (p.poison?.rem > 0) {
+        p.poison.rem -= dt;
+        p.poison.tickAcc = (p.poison.tickAcc || 0) + dt;
+        while (p.poison.tickAcc >= 1) {
+          p.poison.tickAcc -= 1;
+          applyDamage(p.id, p.poison.dps, p.poison.sourceId || null);
+        }
+        if (p.poison.rem <= 0) p.poison = null;
+      }
+      if (p.burn?.rem > 0) {
+        p.burn.rem -= dt;
+        p.burn.tickAcc = (p.burn.tickAcc || 0) + dt;
+        while (p.burn.tickAcc >= 1) {
+          p.burn.tickAcc -= 1;
+          applyDamage(p.id, p.burn.dps, p.burn.sourceId || null);
+        }
+        if (p.burn.rem <= 0) p.burn = null;
+      }
+    }
+  }
+
+  function tickStatusVisuals(dt) {
+    for (const p of allPlayers()) {
+      if (p.poison?.rem > 0) {
+        p.poison.rem -= dt;
+        if (p.poison.rem <= 0) p.poison = null;
+      }
+      if (p.burn?.rem > 0) {
+        p.burn.rem -= dt;
+        if (p.burn.rem <= 0) p.burn = null;
+      }
+    }
+  }
+
+  function applyHeal(playerId, amount) {
+    if (mode !== "host" && mode !== "solo") return;
+    const t = players.get(playerId);
+    if (!t || !isPlayerAlive(t)) return;
+    t.hp = Math.min(MAX_HP, (typeof t.hp === "number" ? t.hp : MAX_HP) + amount);
+    const msg = { type: "hp", id: playerId, hp: t.hp };
+    if (mode === "host") broadcast(msg);
+    handleMessage(msg);
+  }
+
+  function resolvePotionLanding(pr) {
+    const radius = POTION_AOE_RADIUS + PLAYER_SIZE / 2;
+    for (const p of allPlayers()) {
+      if (!isPlayerAlive(p)) continue;
+      if (Math.hypot(p.x - pr.x, p.y - pr.y) > radius) continue;
+      if (pr.kind === "poison_potion") applyPoisonToPlayer(p.id, pr.owner);
+      else if (pr.kind === "healing_potion") applyHeal(p.id, 30);
+    }
+  }
+
+  function isPotionKind(kind) {
+    return kind === "poison_potion" || kind === "healing_potion";
+  }
+
+  function projectileHitsPlayer(pr, p) {
+    const half = PLAYER_SIZE / 2;
+    const hitR = pr.kind === "arrow" ? 10 : pr.kind === "rpg_rocket" ? pr.r || 10 : pr.r || 8;
+    const dx = clamp(pr.x, p.x - half, p.x + half) - pr.x;
+    const dy = clamp(pr.y, p.y - half, p.y + half) - pr.y;
+    return dx * dx + dy * dy <= hitR * hitR;
   }
 
   function stepProjectiles(dt) {
@@ -3153,34 +3602,50 @@
     if (projectiles.length === 0) return;
     const toRemove = [];
     for (const pr of projectiles) {
+      const stepDist = Math.hypot(pr.vx * dt, pr.vy * dt);
       pr.x += pr.vx * dt;
       pr.y += pr.vy * dt;
       pr.ang = Math.atan2(pr.vy, pr.vx);
+      if (typeof pr.distTraveled === "number") pr.distTraveled += stepDist;
       pr.life -= dt;
-      if (pr.life <= 0) {
+
+      const potion = isPotionKind(pr.kind);
+      let exploded = false;
+
+      if (potion && typeof pr.maxDist === "number" && pr.distTraveled >= pr.maxDist) {
+        resolvePotionLanding(pr);
+        toRemove.push(pr.pid);
+        exploded = true;
+      }
+
+      if (!exploded && pr.life <= 0) {
+        if (potion) resolvePotionLanding(pr);
         toRemove.push(pr.pid);
         continue;
       }
-      if (!pr.infinite) {
+
+      if (!exploded && !pr.infinite) {
         if (pr.x < -30 || pr.x > WORLD_W + 30 || pr.y < -30 || pr.y > WORLD_H + 30) {
+          if (potion) resolvePotionLanding(pr);
           toRemove.push(pr.pid);
           continue;
         }
       }
+
+      if (exploded) continue;
+
       for (const p of allPlayers()) {
-        if (p.id === pr.owner) continue;
+        if (!potion && p.id === pr.owner) continue;
         if (!isPlayerAlive(p)) continue;
-        const half = PLAYER_SIZE / 2;
-        const hitR =
-          pr.kind === "arrow" ? 10 : pr.kind === "rpg_rocket" ? pr.r || 10 : pr.r || 8;
-        const dx = clamp(pr.x, p.x - half, p.x + half) - pr.x;
-        const dy = clamp(pr.y, p.y - half, p.y + half) - pr.y;
-        if (dx * dx + dy * dy <= hitR * hitR) {
-          const shooter = pr.owner;
-          applyDamage(p.id, pr.dmg, shooter);
+        if (!projectileHitsPlayer(pr, p)) continue;
+        if (potion) {
+          resolvePotionLanding(pr);
           toRemove.push(pr.pid);
           break;
         }
+        applyDamage(p.id, pr.dmg, pr.owner);
+        toRemove.push(pr.pid);
+        break;
       }
     }
     for (const pid of toRemove) removeProjectile(pid);
@@ -3189,8 +3654,13 @@
   function applyDamage(targetId, dmg, attackerId) {
     const t = players.get(targetId);
     if (!t) return;
+    if (t.rollInvuln) return;
     const prevHp = typeof t.hp === "number" ? t.hp : MAX_HP;
     t.hp = Math.max(0, prevHp - dmg);
+    if (t.hp === 0) {
+      clearPlayerEffects(t);
+      if (mode === "host") broadcastPlayerEffect(targetId);
+    }
     const msg = { type: "hp", id: targetId, hp: t.hp, attackerId };
     if (mode === "host") broadcast(msg);
     handleMessage(msg);
@@ -3240,11 +3710,18 @@
       return;
     }
 
+    if (weapon === "shot_bow") {
+      spawnShotBowVolley(attackerId, ax, ay, fdx / fl, fdy / fl);
+      return;
+    }
+
     const isProjectile =
       weapon === "bow" ||
       weapon === "reinforced_bow" ||
       weapon === "rpg" ||
       weapon === "tos_rpg" ||
+      weapon === "poison_potion" ||
+      weapon === "healing_potion" ||
       (weapon === "dagger" && data.throw === true);
     if (isProjectile) {
       spawnDirectedProjectile(attackerId, weapon, ax, ay, fdx / fl, fdy / fl, dmg);
@@ -3263,7 +3740,10 @@
         bestD = d;
       }
     }
-    if (best) applyDamage(best.id, dmg, attackerId);
+    if (best) {
+      applyDamage(best.id, dmg, attackerId);
+      if (weapon === "magma_scythe") applyBurnToPlayer(best.id, attackerId);
+    }
   }
 
   if (!canvas || !btnSolo || !btnCreate || !btnJoin || !statusEl) {
@@ -3362,6 +3842,17 @@
     if (id) setEquipped(id);
   });
 
+  if (backpackListEl) {
+    backpackListEl.addEventListener("contextmenu", (e) => {
+      if (!testMode) return;
+      const row = e.target instanceof Element ? e.target.closest("[data-weapon-id]") : null;
+      if (!row) return;
+      e.preventDefault();
+      const id = row.getAttribute("data-weapon-id");
+      if (id) setTestModeRollWeaponPick(id);
+    });
+  }
+
   on(traitListEl, "click", (e) => {
     const t = e.target;
     if (!(t instanceof HTMLElement)) return;
@@ -3418,6 +3909,18 @@
       testerTraitSwitchEl.checked ? "success" : ""
     );
   });
+  if (settingAnimationsEl) {
+    settingAnimationsEl.addEventListener("change", () => {
+      saveSettings({ animationsEnabled: settingAnimationsEl.checked });
+    });
+  }
+  if (settingRareAnimMultEl) {
+    settingRareAnimMultEl.addEventListener("change", () => {
+      const val = parseInt(settingRareAnimMultEl.value, 10);
+      saveSettings({ rareRollAnimMult: clamp(isNaN(val) ? 50 : val, 10, 10000) });
+      settingRareAnimMultEl.value = String(getSettings().rareRollAnimMult);
+    });
+  }
   on(btnCloseSelfMenu, "click", closeSelfMenu);
 
   on(btnKickedOk, "click", () => {
@@ -3472,6 +3975,7 @@
   // Account boot
   load3cCooldown();
   loadTesterPrefs();
+  syncSettingsUI();
   try {
     const remembered = localStorage.getItem(LS_CURRENT);
     if (remembered) setCurrentUser(remembered);

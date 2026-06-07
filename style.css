@@ -385,6 +385,13 @@ body {
   font-weight: 700;
 }
 
+.bp-item.is-test-roll-pick {
+  outline: 2px solid #f39c12;
+  outline-offset: 2px;
+  background: rgba(243, 156, 18, 0.12);
+  border-radius: 6px;
+}
+
 .hud .btn-small {
   margin-bottom: 0;
 }
@@ -835,4 +842,93 @@ body {
 
 .roll-done-btn.hidden {
   display: none;
+}
+
+.roll-card-scene.is-hidden {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.roll-magma-fx {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.roll-magma-fx.hidden {
+  display: none;
+}
+
+.roll-magma-black {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  transition: opacity 0.2s ease-in;
+}
+
+.roll-magma-fx.is-active .roll-magma-black {
+  opacity: 1;
+}
+
+.roll-magma-fire {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  font-size: clamp(4rem, 18vw, 9rem);
+  line-height: 1;
+  transform: translate(-50%, -50%) scale(0.15);
+  transition: transform 2.5s ease-out;
+  filter: drop-shadow(0 0 24px rgba(255, 120, 0, 0.9));
+  z-index: 1;
+  user-select: none;
+  opacity: 0;
+}
+
+.roll-magma-fx.is-active .roll-magma-fire {
+  opacity: 1;
+  transition:
+    transform 2.5s ease-out,
+    opacity 0.15s ease-out;
+}
+
+.roll-magma-fx.is-fire-grow .roll-magma-fire {
+  transform: translate(-50%, -50%) scale(13);
+}
+
+.roll-pop-in-magma {
+  animation: rollPopInMagma 0.28s cubic-bezier(0.34, 1.55, 0.64, 1) forwards;
+}
+
+@keyframes rollPopInMagma {
+  0% {
+    transform: scale(0.2) translateY(30px);
+    opacity: 0;
+    filter: blur(4px);
+  }
+  100% {
+    transform: scale(1) translateY(0);
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+.setting-rarity-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.setting-rarity-row input {
+  width: 6.5rem;
+}
+
+.setting-rarity-suffix {
+  color: #bdc3c7;
+  font-size: 0.9rem;
 }

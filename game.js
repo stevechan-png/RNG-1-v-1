@@ -1,7 +1,7 @@
 (function () {
   const WORLD_W = 800;
   const WORLD_H = 500;
-  const SPEED = 4;
+  const SPEED = 5;
   const PLAYER_SIZE = 28;
   const MAX_PLAYERS = 5;
   const PLAYER_COLORS = ["#e74c3c", "#3498db", "#2ecc71", "#f1c40f", "#9b59b6"];
@@ -98,6 +98,7 @@
   const btnKickedOk = document.getElementById("btnKickedOk");
   const slainFeedEl = document.getElementById("slainFeed");
   const winOverlayEl = document.getElementById("winOverlay");
+  const fightPhaseOverlayEl = document.getElementById("fightPhaseOverlay");
   const winMessageEl = document.getElementById("winMessage");
   const voteStatusEl = document.getElementById("voteStatus");
   const voteHelpTextEl = document.getElementById("voteHelpText");
@@ -1085,8 +1086,32 @@
     };
   }
 
+  let fightPopupTimer = null;
+
+  function showFightPhasePopup() {
+    if (!fightPhaseOverlayEl) return;
+    fightPhaseOverlayEl.classList.remove("hidden");
+    fightPhaseOverlayEl.setAttribute("aria-hidden", "false");
+    if (fightPopupTimer) clearTimeout(fightPopupTimer);
+    fightPopupTimer = setTimeout(() => {
+      fightPopupTimer = null;
+      fightPhaseOverlayEl.classList.add("hidden");
+      fightPhaseOverlayEl.setAttribute("aria-hidden", "true");
+    }, 1000);
+  }
+
+  function onEnterFightPhase() {
+    showFightPhasePopup();
+    if (rollOverlayEl && !rollOverlayEl.classList.contains("hidden")) {
+      hideRollOverlay();
+    }
+    setRollInvuln(false);
+    clearMovementKeys();
+  }
+
   function applyMatchState(ms) {
     if (!ms) return;
+    const prevPhase = matchPhase;
     matchPhase = ms.phase || "lobby";
     phaseEndsAt = ms.phaseEndsAt || 0;
     roomLocked = !!ms.roomLocked;
@@ -1097,6 +1122,9 @@
     }
     nextGameVotes = new Set(ms.votes || []);
     hasVotedNext = localPlayer ? nextGameVotes.has(localPlayer.id) : false;
+    if (prevPhase !== "fighting" && matchPhase === "fighting") {
+      onEnterFightPhase();
+    }
     updateMatchUI();
     syncLoadoutToHostIfAllowed();
   }
@@ -1250,6 +1278,7 @@
     if (matchPhase === "rolling" && now() >= phaseEndsAt) {
       matchPhase = "fighting";
       phaseEndsAt = 0;
+      onEnterFightPhase();
       broadcastMatchState();
     }
   }

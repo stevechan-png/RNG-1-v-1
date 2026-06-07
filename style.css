@@ -932,3 +932,51 @@ body {
   color: #bdc3c7;
   font-size: 0.9rem;
 }
+
+.fight-phase-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.45);
+  animation: fightOverlayIn 0.2s ease-out;
+}
+
+.fight-phase-overlay.hidden {
+  display: none;
+}
+
+.fight-phase-banner {
+  font-size: clamp(3rem, 14vw, 6rem);
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  color: #fff;
+  text-shadow:
+    0 0 24px rgba(231, 76, 60, 0.95),
+    0 4px 0 #922b21,
+    0 0 60px rgba(243, 156, 18, 0.75);
+  animation: fightBannerPop 0.35s cubic-bezier(0.34, 1.45, 0.64, 1);
+}
+
+@keyframes fightOverlayIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fightBannerPop {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}

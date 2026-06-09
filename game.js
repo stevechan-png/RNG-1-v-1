@@ -21,11 +21,13 @@
   const POTION_THROW_SPEED = 300;
   const POTION_MAX_DIST = SCYTHE_RANGE * 3;
   const POTION_AOE_RADIUS = 48;
-  const HEART_HP = 10;
-  const BURN_HEARTS_PER_SEC = 4;
+  const BURN_DMG_PER_SEC = 5;
   const BURN_DURATION_SEC = 2;
+  const BURN_OUTGOING_DMG_MULT = 0.7;
   const POISON_DMG_PER_SEC = 5;
   const POISON_DURATION_SEC = 10;
+  const TRAIT_POISON_DURATION_SEC = 3;
+  const CHAIN_LIGHTNING_CHANCE = 0.2;
   const SHOT_BOW_SPREAD = 14;
   const MAGMA_FIRE_GROW_MS = 2500;
   const LASER_DURATION_SEC = 1;
@@ -75,6 +77,8 @@
   const panelLuckEl = document.getElementById("panelLuck");
   const luckListEl = document.getElementById("luckList");
   const killBonusListEl = document.getElementById("killBonusList");
+  const mutationListEl = document.getElementById("mutationList");
+  const mutationPickerEl = document.getElementById("mutationPicker");
   const luckStatusEl = document.getElementById("luckStatus");
   const settingsModalEl = document.getElementById("settingsModal");
   const redeemCodeEl = document.getElementById("redeemCode");
@@ -199,6 +203,20 @@
     { bonus: 2, cost: 25, label: "+2 Kills", meta: "Permanent — earn 3 kills per elimination" },
     { bonus: 3, cost: 50, label: "+3 Kills", meta: "Permanent — earn 4 kills per elimination" },
   ];
+
+  const MUTATION_TIERS = [
+    {
+      id: "shiny",
+      cost: 30,
+      label: "Shiny",
+      meta: "1/75 shiny roll on weapons · −10% cooldown on shiny weapons",
+    },
+  ];
+  const SHINY_ROLL_ONE_IN = 75;
+  const SHINY_CD_MULT = 0.9;
+  const WEAPON_MUTATION_DEFS = {
+    shiny: { id: "shiny", label: "Shiny", short: "✦ Shiny" },
+  };
 
   function getPlayerName() {
     return (playerNameInput.value || "Player").trim().slice(0, 20) || "Player";
@@ -463,7 +481,7 @@
       magma_scythe: {
         id: "magma_scythe",
         name: "Magma Scythe",
-        meta: "Melee • 10 dmg • burn 4♥/s for 2s • 0.8s cd • 1/300",
+        meta: "Melee • 10 dmg • burn 5 dmg/s for 2s, −30% dmg while burning • 0.4s cd • 1/300",
       },
       tos_rpg: {
         id: "tos_rpg",
@@ -505,6 +523,10 @@
 
   const TRAIT_ROLL_TIERS = [
     ["teleport_jump", 50],
+    ["fast", 85],
+    ["chain_lightning_i", 135],
+    ["kindo_invis", 180],
+    ["excessive_poison", 250],
     ["dash", 2],
     ["speedy", 6],
     ["transparency", 22],
@@ -675,12 +697,14 @@
     return migrateProfile({
       inventory: Object.keys(weaponDefs()),
       equipped: null,
+      equippedMutation: null,
       kills: 999,
       trait: null,
       traitInventory: Object.keys(traitDefs()),
       equippedTrait: null,
       luckMultiplier: 4,
       killBonus: 3,
+      mutations: ["shiny"],
       traitRollUnlocked: true,
     });
   }
@@ -830,6 +854,40 @@
     setGameStatus(`Kill bonus: +${targetBonus} per elimination`, "success");
   }
 
+  function getUnlockedMutations() {
+    if (!profile || !Array.isArray(profile.mutations)) return [];
+    return profile.mutations;
+  }
+
+  function hasMutation(id) {
+    if (testMode && MUTATION_TIERS.some((t) => t.id === id)) return true;
+    return getUnlockedMutations().includes(id);
+  }
+
+  function buyMutationUpgrade(mutationId) {
+    if (!profile) profile = getDefaultProfile();
+    if (testMode) {
+      setLuckStatus("Mutation purchases don't save in test mode.", "error");
+      return;
+    }
+    const tier = MUTATION_TIERS.find((t) => t.id === mutationId);
+    if (!tier) return;
+    if (hasMutation(mutationId)) {
+      setLuckStatus(`You already unlocked ${tier.label}.`, "error");
+      return;
+    }
+    if (!spendKills(tier.cost)) {
+      setLuckStatus(`Need ${tier.cost} kills (you have ${getKillCount()}).`, "error");
+      return;
+    }
+    if (!Array.isArray(profile.mutations)) profile.mutations = [];
+    profile.mutations.push(mutationId);
+    persistProfile();
+    renderWeaponsModal();
+    setLuckStatus(`${tier.label} mutation unlocked!`, "success");
+    setGameStatus(`Mutation unlocked: ${tier.label}`, "success");
+  }
+
   function setLuckStatus(msg, type) {
     if (!luckStatusEl) return;
     luckStatusEl.textContent = msg || "";
@@ -868,18 +926,27 @@
     return {
       inventory: [],
       equipped: null,
+      equippedMutation: null,
       kills: 0,
       trait: null,
       traitInventory: [],
       equippedTrait: null,
       luckMultiplier: 1,
       killBonus: 0,
+      mutations: [],
       traitRollUnlocked: false,
     };
   }
 
   function migrateProfile(prof) {
     if (!prof) return getDefaultProfile();
+    if (!Array.isArray(prof.mutations)) prof.mutations = [];
+    if (Array.isArray(prof.inventory)) {
+      prof.inventory = prof.inventory.map(normalizeInvEntry).filter(Boolean);
+    } else {
+      prof.inventory = [];
+    }
+    if (typeof prof.equippedMutation !== "string") prof.equippedMutation = null;
     if (!Array.isArray(prof.traitInventory)) prof.traitInventory = [];
     if (prof.trait && !prof.traitInventory.includes(prof.trait)) {
       prof.traitInventory.push(prof.trait);
@@ -944,25 +1011,188 @@
     }
   }
 
-  function ensureWeaponInInventory(id) {
-    if (!profile) profile = getDefaultProfile();
-    if (!profile.inventory.includes(id)) profile.inventory.push(id);
+  function normalizeInvEntry(item) {
+    if (typeof item === "string") return { weaponId: item, mutation: null };
+    if (item && typeof item.weaponId === "string") {
+      return { weaponId: item.weaponId, mutation: item.mutation || null };
+    }
+    return null;
   }
 
-  function setEquipped(id) {
+  function getInventoryEntries() {
+    if (!profile) return [];
+    return (profile.inventory || []).map(normalizeInvEntry).filter(Boolean);
+  }
+
+  function inventoryHas(weaponId, mutation) {
+    const want = mutation || null;
+    return getInventoryEntries().some(
+      (e) => e.weaponId === weaponId && (e.mutation || null) === want
+    );
+  }
+
+  function ensureWeaponInInventory(weaponId, mutation = null) {
+    if (!profile) profile = getDefaultProfile();
+    if (!Array.isArray(profile.inventory)) profile.inventory = [];
+    if (!inventoryHas(weaponId, mutation)) {
+      profile.inventory.push({ weaponId, mutation: mutation || null });
+    }
+  }
+
+  function getMutationsOwnedForWeapon(weaponId) {
+    const owned = new Set();
+    for (const e of getInventoryEntries()) {
+      if (e.weaponId === weaponId) owned.add(e.mutation || null);
+    }
+    return Array.from(owned);
+  }
+
+  function ownsWeaponType(weaponId) {
+    return getInventoryEntries().some((e) => e.weaponId === weaponId);
+  }
+
+  function getSelectableMutationsForWeapon(weaponId) {
+    const owned = getMutationsOwnedForWeapon(weaponId);
+    const selectable = new Set(owned.filter((m) => m === "shiny" || m === null));
+    if (testMode && ownsWeaponType(weaponId)) {
+      selectable.add(null);
+      if (hasMutation("shiny")) selectable.add("shiny");
+    }
+    return Array.from(selectable);
+  }
+
+  function canEquipMutation(weaponId, mutation) {
+    const pick = mutation || null;
+    if (testMode && ownsWeaponType(weaponId)) {
+      if (pick === null) return true;
+      if (pick === "shiny" && hasMutation("shiny")) return true;
+      return false;
+    }
+    return inventoryHas(weaponId, pick);
+  }
+
+  function mutationRank(mutation) {
+    if (mutation === "shiny") return 1;
+    return 0;
+  }
+
+  function bestMutationForWeapon(weaponId) {
+    const owned = getSelectableMutationsForWeapon(weaponId);
+    if (owned.length === 0) return null;
+    owned.sort((a, b) => mutationRank(b) - mutationRank(a));
+    return owned[0];
+  }
+
+  function getWeaponGroups() {
+    const map = new Map();
+    for (const e of getInventoryEntries()) {
+      if (!map.has(e.weaponId)) map.set(e.weaponId, new Set());
+      map.get(e.weaponId).add(e.mutation || null);
+    }
+    return Array.from(map.entries()).map(([weaponId, mutations]) => ({
+      weaponId,
+      mutations: Array.from(mutations),
+    }));
+  }
+
+  function rollWeaponMutation() {
+    if (!hasMutation("shiny")) return null;
+    if (Math.random() >= 1 / SHINY_ROLL_ONE_IN) return null;
+    return "shiny";
+  }
+
+  function weaponDisplayName(weaponId, mutation) {
+    const def = weaponDefs()[weaponId];
+    const base = def?.name || weaponId;
+    if (mutation === "shiny") return `${base} (Shiny)`;
+    return base;
+  }
+
+  function mutationOptionLabel(mutation) {
+    if (mutation === "shiny") return WEAPON_MUTATION_DEFS.shiny.short;
+    return "Standard";
+  }
+
+  function getEquippedLoadout() {
+    const weaponId = localPlayer?.weapon ?? profile?.equipped ?? null;
+    if (!weaponId) return null;
+    const mutation =
+      localPlayer && localPlayer.weapon === weaponId
+        ? localPlayer.weaponMutation ?? profile?.equippedMutation ?? null
+        : profile?.equippedMutation ?? null;
+    return { weaponId, mutation: mutation || null };
+  }
+
+  function getEquippedMutation() {
+    return getEquippedLoadout()?.mutation ?? null;
+  }
+
+  function hideMutationPicker() {
+    if (!mutationPickerEl) return;
+    mutationPickerEl.classList.add("hidden");
+    mutationPickerEl.setAttribute("aria-hidden", "true");
+    mutationPickerEl.innerHTML = "";
+  }
+
+  function showMutationPicker(weaponId, anchorEl) {
+    if (!mutationPickerEl || !anchorEl) return;
+    const selectable = getSelectableMutationsForWeapon(weaponId);
+    if (selectable.length <= 1) return;
+    hideMutationPicker();
+    mutationPickerEl.innerHTML = selectable
+      .sort((a, b) => mutationRank(b) - mutationRank(a))
+      .map((mutation) => {
+        const loadout = getEquippedLoadout();
+        const active =
+          loadout?.weaponId === weaponId && (loadout.mutation || null) === (mutation || null);
+        return `<button type="button" class="mutation-picker-option${active ? " is-active" : ""}" role="menuitem" data-pick-mutation="${mutation || "base"}">${mutationOptionLabel(mutation)}</button>`;
+      })
+      .join("");
+    const card = weaponsModalEl?.querySelector(".modal-card.modal-weapons");
+    const cardRect = card?.getBoundingClientRect();
+    const btnRect = anchorEl.getBoundingClientRect();
+    if (cardRect) {
+      mutationPickerEl.style.left = `${Math.min(btnRect.left - cardRect.left, cardRect.width - 168)}px`;
+      mutationPickerEl.style.top = `${btnRect.bottom - cardRect.top + 4}px`;
+    }
+    mutationPickerEl.dataset.weaponId = weaponId;
+    mutationPickerEl.classList.remove("hidden");
+    mutationPickerEl.setAttribute("aria-hidden", "false");
+  }
+
+  function setEquipped(weaponId, mutation) {
     if (!canUseWeapons()) {
       setGameStatus("Equip only during rolling or fighting.", "error");
       return;
     }
     if (!profile) profile = getDefaultProfile();
-    profile.equipped = id;
+    if (!weaponId) return;
+    const pick =
+      mutation === undefined
+        ? bestMutationForWeapon(weaponId)
+        : mutation === null
+          ? null
+          : mutation;
+    if (!canEquipMutation(weaponId, pick)) {
+      setGameStatus("You don't own that weapon variant.", "error");
+      return;
+    }
+    profile.equipped = weaponId;
+    profile.equippedMutation = pick;
     persistProfile();
+    hideMutationPicker();
     if (localPlayer) {
-      localPlayer.weapon = id;
+      localPlayer.weapon = weaponId;
+      localPlayer.weaponMutation = pick;
       if (mode === "host") {
-        broadcast({ type: "equip", id: localPlayer.id, weapon: id });
+        broadcast({
+          type: "equip",
+          id: localPlayer.id,
+          weapon: weaponId,
+          weaponMutation: pick,
+        });
       } else if (mode === "guest") {
-        sendToHost({ type: "equip", weapon: id });
+        sendToHost({ type: "equip", weapon: weaponId, weaponMutation: pick });
       }
     }
     renderBackpack();
@@ -1006,6 +1236,22 @@
         name: "Teleport Jump",
         meta: "Right-click to teleport • 20s cd • 1/50",
       },
+      fast: { id: "fast", name: "Fast", meta: "1.5× movement speed • 1/85" },
+      chain_lightning_i: {
+        id: "chain_lightning_i",
+        name: "Chain Lightning I",
+        meta: "20% on hit — shock all other players for dmg ÷ shock count • 1/135",
+      },
+      kindo_invis: {
+        id: "kindo_invis",
+        name: "Kindo-invis",
+        meta: "50% less visible • 1.1× speed • 1/180",
+      },
+      excessive_poison: {
+        id: "excessive_poison",
+        name: "Accesive Poison",
+        meta: "Melee hits apply poison (5 dmg/s, 3s) • 1/250",
+      },
     };
   }
 
@@ -1039,11 +1285,16 @@
   }
 
   function movementMultiplierForTrait(trait) {
-    return trait === "speedy" ? 1.2 : 1;
+    if (trait === "fast") return 1.5;
+    if (trait === "speedy") return 1.2;
+    if (trait === "kindo_invis") return 1.1;
+    return 1;
   }
 
   function alphaForTrait(trait) {
-    return trait === "transparency" ? 0.8 : 1;
+    if (trait === "kindo_invis") return 0.5;
+    if (trait === "transparency") return 0.8;
+    return 1;
   }
 
   function isMultiplayerMatch() {
@@ -1133,8 +1384,13 @@
     if (!localPlayer || !profile) return;
     if (matchPhase !== "rolling" && matchPhase !== "fighting") return;
     if (!isLocalPlayerAlive()) return;
-    if (profile.equipped && localPlayer.weapon !== profile.equipped) {
-      setEquipped(profile.equipped);
+    const loadout = getEquippedLoadout();
+    if (loadout) {
+      const curMut = localPlayer.weaponMutation ?? null;
+      const wantMut = profile.equippedMutation ?? null;
+      if (localPlayer.weapon !== loadout.weaponId || curMut !== wantMut) {
+        setEquipped(profile.equipped, profile.equippedMutation ?? undefined);
+      }
     }
     const tr = getEquippedTrait();
     if (tr && localPlayer.trait !== tr) setEquippedTrait(tr);
@@ -1759,7 +2015,7 @@
         (weapon === "dagger" && heldMs >= 350) ||
         weapon === "poison_potion" ||
         weapon === "healing_potion";
-      const cd = weaponCooldownMs(weapon, isThrow);
+      const cd = weaponCooldownMs(weapon, isThrow, getEquippedMutation());
       if (now() < attackCooldownUntil) return;
       attackCooldownUntil = now() + cd;
       performAttack({ weapon, aimX: x, aimY: y, throw: isThrow });
@@ -1834,7 +2090,7 @@
   function applyState(list, selfId, match) {
     players.clear();
     for (const p of list) {
-      players.set(p.id, { dirX: 1, dirY: 0, weapon: null, hp: MAX_HP, trait: null, kills: 0, killBonus: 0, user: null, ...p });
+      players.set(p.id, { dirX: 1, dirY: 0, weapon: null, weaponMutation: null, hp: MAX_HP, trait: null, kills: 0, killBonus: 0, user: null, ...p });
       if (p.id === selfId) localPlayer = players.get(p.id);
     }
     applyMatchState(match);
@@ -1854,7 +2110,7 @@
       case "matchReset":
         players.clear();
         for (const p of msg.players || []) {
-          players.set(p.id, { dirX: 1, dirY: 0, weapon: null, hp: MAX_HP, trait: null, kills: 0, killBonus: 0, user: null, ...p });
+          players.set(p.id, { dirX: 1, dirY: 0, weapon: null, weaponMutation: null, hp: MAX_HP, trait: null, kills: 0, killBonus: 0, user: null, ...p });
           if (localPlayer && p.id === localPlayer.id) localPlayer = players.get(p.id);
         }
         applyMatchState(msg.match);
@@ -1908,7 +2164,11 @@
         }
         break;
       case "equip":
-        if (players.has(msg.id)) players.get(msg.id).weapon = msg.weapon;
+        if (players.has(msg.id)) {
+          const ep = players.get(msg.id);
+          ep.weapon = msg.weapon;
+          ep.weaponMutation = msg.weaponMutation || null;
+        }
         break;
       case "trait":
         if (players.has(msg.id)) players.get(msg.id).trait = msg.trait;
@@ -1990,6 +2250,7 @@
           color: PLAYER_COLORS[slot],
           hp: MAX_HP,
           weapon: null,
+          weaponMutation: null,
           trait: (data.trait || null),
           kills: typeof data.kills === "number" ? data.kills : 0,
           killBonus: typeof data.killBonus === "number" ? Math.max(0, Math.min(3, data.killBonus)) : 0,
@@ -2008,7 +2269,11 @@
         const p = players.get(conn.peer);
         if (!p || !isPlayerAlive(p)) return;
         p.weapon = data.weapon || null;
-        broadcast({ type: "equip", id: p.id, weapon: p.weapon }, conn);
+        p.weaponMutation = data.weaponMutation || null;
+        broadcast(
+          { type: "equip", id: p.id, weapon: p.weapon, weaponMutation: p.weaponMutation },
+          conn
+        );
       } else if (data.type === "attack") {
         if (matchPhase !== "fighting") return;
         const p = players.get(conn.peer);
@@ -2285,10 +2550,47 @@
         ctx.fillStyle = "#922b21";
         ctx.fillRect(-3, -10, 6, 8);
       }
+      if (p.weaponMutation === "shiny") drawShinyStarRing(ctx, 8, 0, 16);
       ctx.restore();
     }
     drawStatusParticles(p);
     ctx.restore();
+  }
+
+  function drawShinyStar(ctx, x, y, size, rot) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rot);
+    ctx.fillStyle = "#f1c40f";
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+    ctx.lineWidth = 0.55;
+    ctx.beginPath();
+    for (let i = 0; i < 4; i++) {
+      const a = (Math.PI / 2) * i;
+      const ox = Math.cos(a) * size;
+      const oy = Math.sin(a) * size;
+      if (i === 0) ctx.moveTo(ox, oy);
+      else ctx.lineTo(ox, oy);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawShinyStarRing(ctx, cx, cy, radius) {
+    const count = 5;
+    const t = now() / 1000;
+    for (let i = 0; i < count; i++) {
+      const ang = t * 1.6 + (i * Math.PI * 2) / count;
+      drawShinyStar(
+        ctx,
+        cx + Math.cos(ang) * radius,
+        cy + Math.sin(ang) * radius * 0.8,
+        2 + (i % 2),
+        ang + 0.4
+      );
+    }
   }
 
   function drawStatusParticles(p) {
@@ -2512,6 +2814,7 @@
       color: PLAYER_COLORS[0],
       hp: MAX_HP,
       weapon: profile?.equipped || null,
+      weaponMutation: profile?.equippedMutation || null,
       trait: getEquippedTrait(),
       kills: profile?.kills || 0,
       killBonus: getKillBonus(),
@@ -2613,6 +2916,7 @@
         color: PLAYER_COLORS[0],
         hp: MAX_HP,
         weapon: profile?.equipped || null,
+        weaponMutation: profile?.equippedMutation || null,
         trait: profile?.trait || null,
         kills: profile?.kills || 0,
         killBonus: getKillBonus(),
@@ -2753,43 +3057,58 @@
     weaponsModalEl.classList.add("hidden");
     weaponsModalEl.setAttribute("aria-hidden", "true");
     clearMovementKeys();
+    hideMutationPicker();
     setLuckStatus("");
   }
 
   function renderBackpack() {
     if (!backpackListEl) return;
     const defs = weaponDefs();
-    const inv = profile?.inventory || [];
-    if (inv.length === 0) {
+    const groups = getWeaponGroups();
+    if (groups.length === 0) {
       backpackListEl.innerHTML = testMode
         ? `<p class="help-text">Test mode — right-click a weapon below to pick your next roll.</p>`
         : `<p class="help-text">No weapons yet. Click <strong>Roll Weapon</strong>.</p>`;
       return;
     }
-    const pickHint =
-      testMode
-        ? `<p class="help-text">Test mode — right-click a weapon to pick your next roll.</p>`
-        : "";
-    const equipped = profile?.equipped || null;
+    const pickHint = testMode
+      ? `<p class="help-text">Test mode — right-click a weapon row to pick your next roll. Right-click <strong>Equip</strong> to choose a mutation.</p>`
+      : `<p class="help-text">Right-click <strong>Equip</strong> to choose a mutation variant.</p>`;
+    const loadout = getEquippedLoadout();
     backpackListEl.innerHTML =
       pickHint +
-      inv
-      .map((id) => {
-        const w = defs[id];
-        const isEq = equipped === id;
-        const isPick = testMode && testModeNextRollWeapon === id;
-        const btn = isEq
-          ? `<button type="button" class="btn btn-small btn-equipped" disabled>Equipped</button>`
-          : `<button type="button" class="btn btn-small btn-equip" data-equip="${id}">Equip</button>`;
-        return `<div class="bp-item${isPick ? " is-test-roll-pick" : ""}" data-weapon-id="${id}">
+      groups
+        .map(({ weaponId, mutations }) => {
+          const w = defs[weaponId];
+          const hasShiny =
+            mutations.includes("shiny") || (testMode && hasMutation("shiny") && ownsWeaponType(weaponId));
+          const isEq = loadout?.weaponId === weaponId;
+          const isPick = testMode && testModeNextRollWeapon === weaponId;
+          const eqLabel =
+            isEq && loadout?.mutation === "shiny"
+              ? "Equipped (Shiny)"
+              : isEq
+                ? "Equipped"
+                : null;
+          const btn = eqLabel
+            ? `<button type="button" class="btn btn-small btn-equipped" data-equip-weapon="${weaponId}">${eqLabel}</button>`
+            : `<button type="button" class="btn btn-small btn-equip" data-equip-weapon="${weaponId}">Equip</button>`;
+          const shinyEquipped = isEq && loadout?.mutation === "shiny";
+          const shinyNote = hasShiny ? " · Shiny owned (−10% cd)" : "";
+          const mutHint =
+            getSelectableMutationsForWeapon(weaponId).length > 1
+              ? " · right-click Equip for variant"
+              : "";
+          return `<div class="bp-item${isPick ? " is-test-roll-pick" : ""}${shinyEquipped ? " is-shiny-equipped" : ""}" data-weapon-id="${weaponId}">
+          ${shinyEquipped ? '<div class="bp-shiny-stars" aria-hidden="true"></div>' : ""}
           <div class="bp-left">
-            <div class="bp-name">${w ? w.name : id}${isPick ? " · next roll" : ""}</div>
-            <div class="bp-meta">${w ? w.meta : ""}</div>
+            <div class="bp-name">${w ? w.name : weaponId}${isPick ? " · next roll" : ""}${shinyEquipped ? " ✦" : ""}</div>
+            <div class="bp-meta">${w ? w.meta : ""}${shinyNote}${mutHint}</div>
           </div>
           <div class="bp-actions">${btn}</div>
         </div>`;
-      })
-      .join("");
+        })
+        .join("");
   }
 
   function renderWeaponsModal() {
@@ -2867,6 +3186,28 @@
       }).join("");
     }
 
+    if (mutationListEl) {
+      const unlocked = getUnlockedMutations();
+      mutationListEl.innerHTML = MUTATION_TIERS.map((tier) => {
+        const owned = unlocked.includes(tier.id);
+        const kills = getKillCount();
+        const canBuy = !owned && kills >= tier.cost && !testMode;
+        let btn = "";
+        if (owned) {
+          btn = `<span class="luck-owned">Owned</span>`;
+        } else {
+          btn = `<button type="button" class="btn btn-small btn-equip" data-buy-mutation="${tier.id}" ${canBuy ? "" : "disabled"}>Unlock (${tier.cost} kills)</button>`;
+        }
+        return `<div class="bp-item">
+          <div class="bp-left">
+            <div class="bp-name">${tier.label}</div>
+            <div class="bp-meta">${tier.meta} · costs ${tier.cost} kills</div>
+          </div>
+          <div class="bp-actions">${btn}</div>
+        </div>`;
+      }).join("");
+    }
+
     const statusParts = [];
     const luck = getLuckMultiplier();
     if (luck > 1) {
@@ -2875,6 +3216,13 @@
     const bonus = getKillBonus();
     if (bonus > 0) {
       statusParts.push(`+${bonus} kill bonus (${1 + bonus} per elimination)`);
+    }
+    const mutations = getUnlockedMutations();
+    if (mutations.length > 0) {
+      const names = mutations
+        .map((id) => MUTATION_TIERS.find((t) => t.id === id)?.label || id)
+        .join(", ");
+      statusParts.push(`mutations: ${names}`);
     }
     if (statusParts.length > 0) {
       setLuckStatus(`Active: ${statusParts.join(" · ")}. Only your best tier applies.`, "success");
@@ -2942,6 +3290,10 @@
       speedy: { a: "#1e8449", b: "#0e6251", border: "#2ecc71", glow: "rgba(46, 204, 113, 0.9)" },
       transparency: { a: "#5b2c6f", b: "#2e1a36", border: "#bb8fce", glow: "rgba(187, 143, 206, 0.85)" },
       teleport_jump: { a: "#117a65", b: "#0b5345", border: "#1abc9c", glow: "rgba(26, 188, 156, 0.9)" },
+      fast: { a: "#d4ac0d", b: "#7d6608", border: "#f4d03f", glow: "rgba(244, 208, 63, 0.9)" },
+      chain_lightning_i: { a: "#5dade2", b: "#1a5276", border: "#aed6f1", glow: "rgba(174, 214, 241, 0.95)" },
+      kindo_invis: { a: "#566573", b: "#2c3e50", border: "#abb2b9", glow: "rgba(171, 178, 185, 0.75)" },
+      excessive_poison: { a: "#196f3d", b: "#0b5345", border: "#58d68d", glow: "rgba(88, 214, 141, 0.9)" },
     };
     return themes[id] || themes.dash;
   }
@@ -2998,14 +3350,15 @@
     if (scene) scene.classList.remove("is-hidden", "roll-pop-in-magma");
   }
 
-  function runMagmaRevealSequence(finalId, finalDef, kind, onComplete) {
+  function runMagmaRevealSequence(finalId, finalDef, kind, onComplete, extra) {
+    const rollOpts = { fastPop: true, mutation: extra?.mutation || null };
     const scene = rollOverlayEl?.querySelector(".roll-card-scene");
     if (rollRevealTextEl) rollRevealTextEl.classList.remove("is-visible");
     if (btnRollDone) btnRollDone.classList.add("hidden");
     if (scene) scene.classList.add("is-hidden");
 
     if (!rollMagmaFxEl) {
-      revealRollCard(finalId, finalDef, kind);
+      revealRollCard(finalId, finalDef, kind, rollOpts);
       onComplete(finalId);
       return;
     }
@@ -3024,7 +3377,7 @@
         sceneEl.classList.add("roll-pop-in-magma");
       }
       hideMagmaFxInstant();
-      revealRollCard(finalId, finalDef, kind, { fastPop: true });
+      revealRollCard(finalId, finalDef, kind, rollOpts);
       onComplete(finalId);
     };
 
@@ -3061,7 +3414,7 @@
     rollOverlayEl.classList.add("hidden");
     rollOverlayEl.setAttribute("aria-hidden", "true");
     if (rollCardInnerEl) {
-      rollCardInnerEl.classList.remove("is-shuffling", "is-revealed", "is-trait-star");
+      rollCardInnerEl.classList.remove("is-shuffling", "is-revealed", "is-trait-star", "is-shiny-roll");
     }
     const scene = rollOverlayEl.querySelector(".roll-card-scene");
     if (scene) scene.classList.remove("is-trait-star");
@@ -3103,23 +3456,27 @@
     applyRollCardTheme(id, kind);
   }
 
-  function applyRollCardTheme(id, kind) {
+  function applyRollCardTheme(id, kind, mutation) {
     if (!rollCardInnerEl) return;
     const t = kind === "trait" ? traitRollTheme(id) : weaponRollTheme(id);
     rollCardInnerEl.style.setProperty("--roll-front-a", t.a);
     rollCardInnerEl.style.setProperty("--roll-front-b", t.b);
     rollCardInnerEl.style.setProperty("--roll-border", t.border);
     rollCardInnerEl.style.setProperty("--roll-glow", t.glow);
+    rollCardInnerEl.classList.toggle("is-shiny-roll", kind === "weapon" && mutation === "shiny");
   }
 
   function revealRollCard(finalId, def, kind, opts) {
+    const mutation = opts?.mutation || null;
     const d = def || { name: finalId, meta: "" };
-    applyRollCardTheme(finalId, kind);
+    applyRollCardTheme(finalId, kind, mutation);
     if (rollCardLabelEl) {
       rollCardLabelEl.textContent = kind === "trait" ? "Trait unlocked" : "You got";
     }
-    if (rollFrontNameEl) rollFrontNameEl.textContent = d.name;
-    if (rollFrontMetaEl) rollFrontMetaEl.textContent = d.meta || "";
+    const displayName = kind === "weapon" ? weaponDisplayName(finalId, mutation) : d.name;
+    const metaExtra = mutation === "shiny" ? " · Shiny (−10% cooldown)" : "";
+    if (rollFrontNameEl) rollFrontNameEl.textContent = displayName;
+    if (rollFrontMetaEl) rollFrontMetaEl.textContent = (d.meta || "") + metaExtra;
     if (rollCardInnerEl) {
       rollCardInnerEl.classList.remove("is-shuffling");
       void rollCardInnerEl.offsetWidth;
@@ -3131,23 +3488,24 @@
       }
     }
     if (rollRevealTextEl) {
-      rollRevealTextEl.textContent = `You got ${d.name}!`;
+      rollRevealTextEl.textContent = `You got ${displayName}!`;
       rollRevealTextEl.classList.add("is-visible");
     }
     if (btnRollDone) btnRollDone.classList.remove("hidden");
     setGameStatus(
-      kind === "trait" ? `Rolled trait: ${d.name}` : `Rolled: ${d.name}`,
+      kind === "trait" ? `Rolled trait: ${d.name}` : `Rolled: ${displayName}`,
       "success"
     );
   }
 
   function runRollAnimation(opts) {
-    const { shuffleOrder, getDef, rollFinal, onComplete, kind, rollingLabel } = opts;
+    const { shuffleOrder, getDef, rollFinal, rollMutation, onComplete, kind, rollingLabel } = opts;
     const finalId = rollFinal();
+    const finalMutation = rollMutation ? rollMutation() : null;
     const finalDef = getDef(finalId);
 
     if (!getSettings().animationsEnabled || !rollOverlayEl || !rollCardInnerEl) {
-      onComplete(finalId);
+      onComplete(finalId, finalMutation);
       return;
     }
     if (rollAnimTimer) return;
@@ -3171,15 +3529,17 @@
       if (playMagma && now() >= magmaTriggerAt) {
         clearInterval(rollAnimTimer);
         rollAnimTimer = null;
-        runMagmaRevealSequence(finalId, finalDef, kind, onComplete);
+        runMagmaRevealSequence(finalId, finalDef, kind, (id) => onComplete(id, finalMutation), {
+          mutation: finalMutation,
+        });
         return;
       }
 
       if (now() >= shuffleEnd) {
         clearInterval(rollAnimTimer);
         rollAnimTimer = null;
-        revealRollCard(finalId, finalDef, kind);
-        onComplete(finalId);
+        revealRollCard(finalId, finalDef, kind, { mutation: finalMutation });
+        onComplete(finalId, finalMutation);
       }
     }, 75);
   }
@@ -3214,11 +3574,11 @@
       ],
       getDef: (id) => defs[id] || { name: id, meta: "" },
       rollFinal: rollWeaponIdForRoll,
-      onComplete: (finalId) => {
-        ensureWeaponInInventory(finalId);
-        if (!profile.equipped) profile.equipped = finalId;
-        persistProfile();
-        setEquipped(profile.equipped);
+      rollMutation: rollWeaponMutation,
+      onComplete: (finalId, finalMutation) => {
+        ensureWeaponInInventory(finalId, finalMutation);
+        if (!profile.equipped) setEquipped(finalId, finalMutation ?? undefined);
+        else persistProfile();
         renderWeaponsModal();
         showShareBox(roomCode || "");
       },
@@ -3258,21 +3618,24 @@
     return localPlayer?.weapon || profile?.equipped || null;
   }
 
-  function weaponCooldownMs(weaponId, isThrow) {
-    if (weaponId === "knife") return 500;
-    if (weaponId === "scythe") return 300;
-    if (weaponId === "katana") return 300;
-    if (weaponId === "magma_scythe") return 800;
-    if (weaponId === "bow") return 1000;
-    if (weaponId === "reinforced_bow") return 1000;
-    if (weaponId === "shot_bow") return 3000;
-    if (weaponId === "dagger") return isThrow ? 1200 : 700;
-    if (weaponId === "poison_potion") return 12000;
-    if (weaponId === "healing_potion") return 10000;
-    if (weaponId === "rpg") return 2000;
-    if (weaponId === "laser_launcher") return 1500;
-    if (weaponId === "tos_rpg") return 2000;
-    return 600;
+  function weaponCooldownMs(weaponId, isThrow, mutation) {
+    let cd;
+    if (weaponId === "knife") cd = 500;
+    else if (weaponId === "scythe") cd = 300;
+    else if (weaponId === "katana") cd = 300;
+    else if (weaponId === "magma_scythe") cd = 400;
+    else if (weaponId === "bow") cd = 1000;
+    else if (weaponId === "reinforced_bow") cd = 1000;
+    else if (weaponId === "shot_bow") cd = 3000;
+    else if (weaponId === "dagger") cd = isThrow ? 1200 : 700;
+    else if (weaponId === "poison_potion") cd = 12000;
+    else if (weaponId === "healing_potion") cd = 10000;
+    else if (weaponId === "rpg") cd = 2000;
+    else if (weaponId === "laser_launcher") cd = 1500;
+    else if (weaponId === "tos_rpg") cd = 2000;
+    else cd = 600;
+    if (mutation === "shiny") cd = Math.max(1, Math.round(cd * SHINY_CD_MULT));
+    return cd;
   }
 
   function meleeRange(weaponId) {
@@ -3530,14 +3893,14 @@
     });
   }
 
-  function applyPoisonToPlayer(playerId, sourceId) {
+  function applyPoisonToPlayer(playerId, sourceId, durationSec = POISON_DURATION_SEC, dps = POISON_DMG_PER_SEC) {
     if (mode !== "host" && mode !== "solo") return;
     const p = players.get(playerId);
     if (!p || !isPlayerAlive(p)) return;
     p.poison = {
-      rem: POISON_DURATION_SEC,
+      rem: durationSec,
       tickAcc: 0,
-      dps: POISON_DMG_PER_SEC,
+      dps,
       sourceId: sourceId || null,
     };
     if (mode === "host") broadcastPlayerEffect(playerId);
@@ -3550,7 +3913,7 @@
     p.burn = {
       rem: BURN_DURATION_SEC,
       tickAcc: 0,
-      dps: BURN_HEARTS_PER_SEC * HEART_HP,
+      dps: BURN_DMG_PER_SEC,
       sourceId: sourceId || null,
     };
     if (mode === "host") broadcastPlayerEffect(playerId);
@@ -3680,10 +4043,33 @@
     for (const pid of toRemove) removeProjectile(pid);
   }
 
-  function applyDamage(targetId, dmg, attackerId) {
+  function tryChainLightning(attackerId, primaryTargetId, dealtDmg) {
+    if (!attackerId || dealtDmg <= 0) return;
+    const attacker = players.get(attackerId);
+    if (!attacker || attacker.trait !== "chain_lightning_i") return;
+    if (Math.random() >= CHAIN_LIGHTNING_CHANCE) return;
+    const targets = allPlayers().filter(
+      (p) => isPlayerAlive(p) && p.id !== attackerId && p.id !== primaryTargetId
+    );
+    if (targets.length === 0) return;
+    const shockDmg = Math.max(1, Math.round(dealtDmg / targets.length));
+    for (const p of targets) {
+      applyDamage(p.id, shockDmg, attackerId, { skipChainLightning: true });
+    }
+  }
+
+  function attackerOutgoingDamage(attackerId, baseDmg) {
+    if (!attackerId) return baseDmg;
+    const attacker = players.get(attackerId);
+    if (!attacker?.burn?.rem || attacker.burn.rem <= 0) return baseDmg;
+    return Math.max(1, Math.round(baseDmg * BURN_OUTGOING_DMG_MULT));
+  }
+
+  function applyDamage(targetId, dmg, attackerId, opts = {}) {
     const t = players.get(targetId);
     if (!t) return;
     if (t.rollInvuln) return;
+    if (attackerId) dmg = attackerOutgoingDamage(attackerId, dmg);
     const prevHp = typeof t.hp === "number" ? t.hp : MAX_HP;
     t.hp = Math.max(0, prevHp - dmg);
     if (t.hp === 0) {
@@ -3693,6 +4079,9 @@
     const msg = { type: "hp", id: targetId, hp: t.hp, attackerId };
     if (mode === "host") broadcast(msg);
     handleMessage(msg);
+    if (!opts.skipChainLightning && attackerId && dmg > 0) {
+      tryChainLightning(attackerId, targetId, dmg);
+    }
     if (prevHp > 0 && t.hp === 0 && attackerId) {
       if (mode === "host" || mode === "solo") hostSlain(targetId, attackerId);
       const a = players.get(attackerId);
@@ -3772,6 +4161,9 @@
     if (best) {
       applyDamage(best.id, dmg, attackerId);
       if (weapon === "magma_scythe") applyBurnToPlayer(best.id, attackerId);
+      if (attacker.trait === "excessive_poison") {
+        applyPoisonToPlayer(best.id, attackerId, TRAIT_POISON_DURATION_SEC, POISON_DMG_PER_SEC);
+      }
     }
   }
 
@@ -3838,6 +4230,12 @@
     const bonus = parseInt(t.getAttribute("data-buy-kill-bonus") || "", 10);
     if (bonus) buyKillBonusUpgrade(bonus);
   });
+  on(mutationListEl, "click", (e) => {
+    const t = e.target;
+    if (!(t instanceof HTMLElement)) return;
+    const id = t.getAttribute("data-buy-mutation");
+    if (id) buyMutationUpgrade(id);
+  });
   btnWeapons.addEventListener("click", openWeaponsModal);
   btnSettings.addEventListener("click", openSettingsModal);
   btnCloseWeapons.addEventListener("click", closeWeaponsModal);
@@ -3864,15 +4262,37 @@
   settingsModalEl.addEventListener("click", (e) => {
     if (e.target === settingsModalEl) closeSettingsModal();
   });
+  on(mutationPickerEl, "click", (e) => {
+    const btn = e.target instanceof Element ? e.target.closest("[data-pick-mutation]") : null;
+    if (!btn || !mutationPickerEl) return;
+    e.stopPropagation();
+    const pick = btn.getAttribute("data-pick-mutation");
+    const weaponId = mutationPickerEl.dataset.weaponId;
+    if (!pick || !weaponId) return;
+    setEquipped(weaponId, pick === "base" ? null : pick);
+  });
+
   on(backpackListEl, "click", (e) => {
     const t = e.target;
     if (!(t instanceof HTMLElement)) return;
-    const id = t.getAttribute("data-equip");
-    if (id) setEquipped(id);
+    const weaponId = t.getAttribute("data-equip-weapon");
+    if (weaponId) {
+      const loadout = getEquippedLoadout();
+      if (loadout?.weaponId === weaponId && t.classList.contains("btn-equipped")) return;
+      setEquipped(weaponId);
+    }
   });
 
   if (backpackListEl) {
     backpackListEl.addEventListener("contextmenu", (e) => {
+      const equipBtn =
+        e.target instanceof Element ? e.target.closest("[data-equip-weapon]") : null;
+      if (equipBtn) {
+        e.preventDefault();
+        const weaponId = equipBtn.getAttribute("data-equip-weapon");
+        if (weaponId) showMutationPicker(weaponId, equipBtn);
+        return;
+      }
       if (!testMode) return;
       const row = e.target instanceof Element ? e.target.closest("[data-weapon-id]") : null;
       if (!row) return;
@@ -3881,6 +4301,13 @@
       if (id) setTestModeRollWeaponPick(id);
     });
   }
+
+  document.addEventListener("click", (e) => {
+    if (!mutationPickerEl || mutationPickerEl.classList.contains("hidden")) return;
+    if (e.target instanceof Element && mutationPickerEl.contains(e.target)) return;
+    if (e.target instanceof Element && e.target.closest("[data-equip-weapon]")) return;
+    hideMutationPicker();
+  });
 
   on(traitListEl, "click", (e) => {
     const t = e.target;

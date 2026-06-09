@@ -357,6 +357,7 @@ body {
   display: flex;
   gap: 0.35rem;
   margin-bottom: 0.85rem;
+  flex-shrink: 0;
 }
 
 .inventory-tab {
@@ -383,6 +384,101 @@ body {
 .luck-owned {
   color: #2ecc71;
   font-weight: 700;
+}
+
+.mutation-picker {
+  position: absolute;
+  z-index: 30;
+  min-width: 148px;
+  padding: 0.35rem;
+  border-radius: 8px;
+  border: 1px solid rgba(241, 196, 15, 0.45);
+  background: #1a2433;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.mutation-picker-option {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0.45rem 0.55rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #ecf0f1;
+  text-align: left;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mutation-picker-option:hover {
+  background: rgba(241, 196, 15, 0.15);
+}
+
+.mutation-picker-option.is-active {
+  background: rgba(241, 196, 15, 0.22);
+  color: #f1c40f;
+}
+
+.bp-item.is-shiny-equipped {
+  position: relative;
+}
+
+.bp-shiny-stars {
+  display: block;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.bp-shiny-stars::before,
+.bp-shiny-stars::after {
+  content: "✦";
+  position: absolute;
+  color: #f1c40f;
+  font-size: 0.62rem;
+  line-height: 1;
+  opacity: 0.95;
+  text-shadow: 0 0 5px rgba(241, 196, 15, 0.85);
+}
+
+.bp-shiny-stars::before {
+  top: 4px;
+  left: 6px;
+}
+
+.bp-shiny-stars::after {
+  right: 34%;
+  bottom: 5px;
+}
+
+.bp-item.is-shiny-equipped {
+  box-shadow: inset 0 0 0 1px rgba(241, 196, 15, 0.35);
+}
+
+#rollCardInner.is-shiny-roll {
+  position: relative;
+}
+
+#rollCardInner.is-shiny-roll::before,
+#rollCardInner.is-shiny-roll::after {
+  content: "✦";
+  position: absolute;
+  color: #f1c40f;
+  font-size: 0.9rem;
+  text-shadow: 0 0 8px rgba(241, 196, 15, 0.9);
+  pointer-events: none;
+  z-index: 3;
+}
+
+#rollCardInner.is-shiny-roll::before {
+  top: -6px;
+  left: -4px;
+}
+
+#rollCardInner.is-shiny-roll::after {
+  right: -4px;
+  bottom: -6px;
 }
 
 .bp-item.is-test-roll-pick {
@@ -471,10 +567,16 @@ body {
 }
 
 .modal-card.modal-weapons {
+  position: relative;
   max-height: 90vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.modal-card.modal-weapons > h2,
+.modal-card.modal-weapons > .btn {
+  flex-shrink: 0;
 }
 
 .modal-scroll {
